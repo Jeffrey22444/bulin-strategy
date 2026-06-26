@@ -1,6 +1,24 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from bbmr.state_machine import TradeState
+from bbmr.signals import EntryReference
+
+
+@dataclass(frozen=True)
+class TradeContext:
+    state: TradeState = TradeState.FLAT
+    side: str | None = None
+    entry_reference: EntryReference | None = None
+    entry_price: float | None = None
+    fixed_sl: float | None = None
+    one_r: float | None = None
+    initial_size: float | None = None
+    add_size: float = 0.0
+    add_count: int = 0
+    weighted_avg_entry: float | None = None
+    soft_fail_triggered: bool = False
+
 
 @dataclass(frozen=True)
 class RunSession:

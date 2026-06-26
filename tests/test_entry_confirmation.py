@@ -1,8 +1,10 @@
 from bbmr.entry_confirmation import (
     long_entry_confirmed,
+    long_second_reentry_confirmed,
     pending_expired,
     pending_invalidated,
     short_entry_confirmed,
+    short_second_reentry_confirmed,
 )
 from bbmr.signals import EntryReference
 
@@ -25,3 +27,10 @@ def test_pending_invalidation_predicates():
     assert pending_invalidated("short", False, False, False, True, 1.0, 1.8) is True
     assert pending_invalidated("long", False, False, False, False, 1.8, 1.8) is True
     assert pending_invalidated("long", False, False, False, True, 1.0, 1.8) is False
+
+
+def test_second_reentry_confirmation():
+    assert long_second_reentry_confirmed(89, 91, 90) is True
+    assert long_second_reentry_confirmed(91, 92, 90) is False
+    assert short_second_reentry_confirmed(111, 109, 110) is True
+    assert short_second_reentry_confirmed(109, 108, 110) is False

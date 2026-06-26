@@ -29,3 +29,11 @@ def pending_invalidated(
         or (side == "short" and upper_band_walking)
         or volume_ratio >= volume_reject
     )
+
+
+def long_second_reentry_confirmed(low_15m: float, close_15m: float, current_lb: float) -> bool:
+    return low_15m <= current_lb and close_15m > current_lb
+
+
+def short_second_reentry_confirmed(high_15m: float, close_15m: float, current_ub: float) -> bool:
+    return high_15m >= current_ub and close_15m < current_ub
