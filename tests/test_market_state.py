@@ -26,7 +26,7 @@ def test_range_disallows_nan_slope_warmup():
 
 
 def test_lower_band_walking_covers_combined_and_outside_conditions():
-    config = load_config("configs/strategy_bbmr_v3_2.yaml").band_walking
+    config = load_config("configs/strategy_bbmr_v3_2.yaml").band_walking.model_copy(update={"enabled": True})
     close = pd.Series([90, 90, 90, 90, 90, 99, 90, 90, 90, 90, 90, 90], dtype=float)
     mb = pd.Series([100] * 12, dtype=float)
     lb = pd.Series([90] * 12, dtype=float)
@@ -37,7 +37,7 @@ def test_lower_band_walking_covers_combined_and_outside_conditions():
 
 
 def test_upper_band_walking_covers_combined_and_outside_conditions():
-    config = load_config("configs/strategy_bbmr_v3_2.yaml").band_walking
+    config = load_config("configs/strategy_bbmr_v3_2.yaml").band_walking.model_copy(update={"enabled": True})
     close = pd.Series([110, 110, 110, 110, 110, 101, 110, 110, 110, 110, 110, 110], dtype=float)
     mb = pd.Series([100] * 12, dtype=float)
     ub = pd.Series([110] * 12, dtype=float)
@@ -45,6 +45,22 @@ def test_upper_band_walking_covers_combined_and_outside_conditions():
     result = compute_upper_band_walking(close, mb, ub, atr, config)
     assert bool(result.iloc[5]) is True
     assert bool(result.iloc[-1]) is True
+
+
+def test_band_walking_disabled_forces_false():
+    config = load_config("configs/strategy_bbmr_v3_2.yaml").band_walking
+    close_lower = pd.Series([90, 90, 90, 90, 90, 90], dtype=float)
+    close_upper = pd.Series([110, 110, 110, 110, 110, 110], dtype=float)
+    mb = pd.Series([100] * 6, dtype=float)
+    lb = pd.Series([90] * 6, dtype=float)
+    ub = pd.Series([110] * 6, dtype=float)
+    atr = pd.Series([10] * 6, dtype=float)
+
+    lower = compute_lower_band_walking(close_lower, mb, lb, atr, config)
+    upper = compute_upper_band_walking(close_upper, mb, ub, atr, config)
+
+    assert lower.tolist() == [False] * 6
+    assert upper.tolist() == [False] * 6
 
 
 def test_rsi_flat_block_and_release():
@@ -74,3 +90,25 @@ def test_market_state_warmup_does_not_create_tradable_signal():
     assert bool(state.loc[0, "range_allowed"]) is False
     assert bool(state.loc[0, "long_market_allowed"]) is False
     assert bool(state.loc[0, "short_market_allowed"]) is False
+
+
+def test_market_state_disabled_band_walking_does_not_block_entries():
+    config = load_config("configs/strategy_bbmr_v3_2.yaml")
+    indicators = pd.DataFrame(
+        {
+            "close": [90.0] * 6,
+            "mb": [100.0] * 6,
+            "lb": [90.0] * 6,
+            "ub": [110.0] * 6,
+            "atr": [10.0] * 6,
+            "bw_percentile": [50.0] * 6,
+            "mb_slope_pct": [0.0] * 6,
+            "rsi14": [40.0] * 6,
+            "volume_ratio": [1.0] * 6,
+        }
+    )
+    state = compute_market_state(indicators, config)
+    assert state["lower_band_walking"].tolist() == [False] * 6
+    assert state["upper_band_walking"].tolist() == [False] * 6
+    assert bool(state.loc[5, "long_market_allowed"]) is True
+    assert bool(state.loc[5, "short_market_allowed"]) is True

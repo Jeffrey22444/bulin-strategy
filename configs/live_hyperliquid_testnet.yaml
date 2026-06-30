@@ -1,0 +1,28 @@
+strategy_config: "configs/strategy_bbmr_trailing_stop_v1.yaml"
+
+exchange:
+  name: "hyperliquid"
+  env: "testnet"
+  wallet_address_env: "HYPERLIQUID_WALLET_ADDRESS"
+  private_key_env: "HYPERLIQUID_PRIVATE_KEY"
+  allow_mainnet: false
+  default_leverage: 3
+  margin_mode: "cross"
+  enable_rate_limit: true
+  timeout_ms: 10000
+
+execution:
+  allow_testnet_orders: true
+  margin_fraction: 0.10
+  leverage: 3
+  allow_strategy_add: false
+  adopt_manual_positions: true
+  manage_full_manual_added_size: true
+  poll_seconds: 30
+  maintain_exchange_stop: true
+
+symbols:
+  default: ["BTC", "ETH", "SOL"]
+
+storage:
+  sqlite_path: "data/live/hyperliquid_testnet.sqlite3"

@@ -28,6 +28,8 @@ def compute_range_allowed(
 
 
 def compute_lower_band_walking(close: pd.Series, mb: pd.Series, lb: pd.Series, atr: pd.Series, config) -> pd.Series:
+    if not config.enabled:
+        return pd.Series(False, index=close.index)
     close, mb, lb, atr = (pd.to_numeric(series, errors="coerce") for series in (close, mb, lb, atr))
     below_mb_count = (close < mb).rolling(config.walk_bars).sum()
     near_lb_count = (close <= lb + atr * config.walk_atr_dist).rolling(config.walk_bars).sum()
@@ -39,6 +41,8 @@ def compute_lower_band_walking(close: pd.Series, mb: pd.Series, lb: pd.Series, a
 
 
 def compute_upper_band_walking(close: pd.Series, mb: pd.Series, ub: pd.Series, atr: pd.Series, config) -> pd.Series:
+    if not config.enabled:
+        return pd.Series(False, index=close.index)
     close, mb, ub, atr = (pd.to_numeric(series, errors="coerce") for series in (close, mb, ub, atr))
     above_mb_count = (close > mb).rolling(config.walk_bars).sum()
     near_ub_count = (close >= ub - atr * config.walk_atr_dist).rolling(config.walk_bars).sum()

@@ -41,6 +41,11 @@ class BollingerSection(StrictModel):
     bandwidth_lookback: int = Field(gt=0)
 
 
+class TrailingBollingerSection(StrictModel):
+    bb_period: int = Field(gt=0)
+    bb_std_mult: float = Field(gt=0)
+
+
 class RsiSection(StrictModel):
     period: int = Field(gt=0)
     oversold: float = Field(ge=0, le=100)
@@ -75,6 +80,10 @@ class StopLossSection(StrictModel):
     min_stop_pct: float = Field(gt=0, lt=1)
 
 
+class TrailingStopSection(StrictModel):
+    initial_stop_pct: float = Field(0.02, gt=0, lt=1)
+
+
 class BandwidthStateSection(StrictModel):
     squeeze_pct: float = Field(ge=0, le=100)
     high_pct: float = Field(ge=0, le=100)
@@ -88,6 +97,7 @@ class BandwidthStateSection(StrictModel):
 
 
 class VolumeSection(StrictModel):
+    entry_filter_enabled: bool = True
     ma_period: int = Field(gt=0)
     weak: float = Field(gt=0)
     reject: float = Field(gt=0)
@@ -104,7 +114,12 @@ class MiddleBandSlopeSection(StrictModel):
     slope_max: float = Field(ge=0, lt=1)
 
 
+class RangeFilterSection(StrictModel):
+    entry_filter_enabled: bool = True
+
+
 class BandWalkingSection(StrictModel):
+    enabled: bool = True
     walk_bars: int = Field(gt=0)
     walk_min_side_bars: int = Field(gt=0)
     walk_min_near_bars: int = Field(gt=0)
@@ -182,6 +197,7 @@ class StrategyConfig(StrictModel):
     stop_loss: StopLossSection
     bandwidth_state: BandwidthStateSection
     volume: VolumeSection
+    range_filter: RangeFilterSection = Field(default_factory=RangeFilterSection)
     middle_band_slope: MiddleBandSlopeSection
     band_walking: BandWalkingSection
     entry_confirmation: EntryConfirmationSection
@@ -205,9 +221,34 @@ class StrategyConfig(StrictModel):
         return self
 
 
-def load_config(path: str | Path) -> StrategyConfig:
+class TrailingStrategyConfig(StrictModel):
+    strategy: StrategySection
+    symbols: SymbolsSection
+    timeframes: TimeframesSection
+    bollinger: TrailingBollingerSection
+    rsi: RsiSection
+    trailing_stop: TrailingStopSection = Field(default_factory=TrailingStopSection)
+    costs: CostsSection
+    safety: SafetySection
+
+    @model_validator(mode="after")
+    def reject_live_execution_flags(self) -> "TrailingStrategyConfig":
+        if self.strategy.name != "bbmr_trailing_stop_v1":
+            raise ValueError("trailing config strategy.name must be bbmr_trailing_stop_v1")
+        if self.strategy.allow_live_trading or self.safety.allow_live_trading:
+            raise ValueError("live trading must stay disabled")
+        if self.strategy.allow_leverage or self.safety.allow_liquidation_price_check:
+            raise ValueError("leverage and liquidation checks are out of scope")
+        if self.safety.allow_hyperliquid_testnet:
+            raise ValueError("Hyperliquid testnet is out of scope")
+        return self
+
+
+def load_config(path: str | Path) -> StrategyConfig | TrailingStrategyConfig:
     with Path(path).open("r", encoding="utf-8") as handle:
         data: Any = yaml.safe_load(handle)
     if not isinstance(data, dict):
         raise ValueError("strategy config must be a YAML mapping")
+    if data.get("strategy", {}).get("name") == "bbmr_trailing_stop_v1":
+        return TrailingStrategyConfig.model_validate(data)
     return StrategyConfig.model_validate(data)

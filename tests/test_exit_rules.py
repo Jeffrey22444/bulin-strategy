@@ -41,8 +41,8 @@ def test_soft_fail_long_short_rolling_behavior():
 def test_early_fail_respects_enabled_confirmations_and_min_count():
     config = load_config("configs/strategy_bbmr_v3_2.yaml")
     soft = pd.Series([True, True])
-    bw = pd.Series([90, 10])
-    volume = pd.Series([1.9, 1.9])
+    bw = pd.Series([config.bandwidth_state.early_fail_bw_pct + 1, config.bandwidth_state.early_fail_bw_pct - 1])
+    volume = pd.Series([config.volume.reject, config.volume.reject])
     walking = pd.Series([False, False])
     assert early_fail_long(soft, bw, volume, walking, config).tolist() == [True, False]
     assert early_fail_short(soft, bw, volume, walking, config).tolist() == [True, False]

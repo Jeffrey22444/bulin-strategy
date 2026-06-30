@@ -30,7 +30,9 @@ def _value(row, key, default=None):
         return default
     if isinstance(row, dict):
         return row.get(key, default)
-    return getattr(row, key, row[key] if key in row else default)
+    if key in row:
+        return row[key]
+    return getattr(row, key, default)
 
 
 def _signal_event(row_1h) -> str | None:

@@ -21,16 +21,16 @@ def compute_signals(data: pd.DataFrame, config) -> pd.DataFrame:
     long_signal = (
         (data["close"] < data["lb"])
         & (data["rsi14"] < config.rsi.oversold)
-        & (data["volume_ratio"] <= config.volume.weak)
-        & data["range_allowed"]
+        & (not config.volume.entry_filter_enabled or data["volume_ratio"] <= config.volume.weak)
+        & (not config.range_filter.entry_filter_enabled or data["range_allowed"])
         & ~data["lower_band_walking"]
         & ~data["rsi_flat_entry_block"]
     )
     short_signal = (
         (data["close"] > data["ub"])
         & (data["rsi14"] > config.rsi.overbought)
-        & (data["volume_ratio"] <= config.volume.weak)
-        & data["range_allowed"]
+        & (not config.volume.entry_filter_enabled or data["volume_ratio"] <= config.volume.weak)
+        & (not config.range_filter.entry_filter_enabled or data["range_allowed"])
         & ~data["upper_band_walking"]
         & ~data["rsi_flat_entry_block"]
     )
