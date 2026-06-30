@@ -22,6 +22,24 @@ Track durable project decisions here. Use concise ADRs and keep historical conte
 
 ## Decisions
 
+### ADR-002: Keep Hyperliquid Live Runner Independent From Backtest Package (2026-06-30)
+
+**Context:**
+- The live runner needs trailing setup, confirmation, entry-signal, and feature-building helpers from the trailing strategy.
+- Mainline should not import the broad research/backtest package just to run Hyperliquid testnet live execution.
+
+**Decision:**
+- Put the live-required trailing helpers in neutral modules: `src/bbmr/trailing.py` and `src/bbmr/trailing_features.py`.
+- Keep the Hyperliquid live runner under `src/bbmr/live/` and make it depend on those neutral helpers, not `src/bbmr/backtest/*`.
+
+**Alternatives Considered:**
+- Copy `src/bbmr/backtest/` into mainline -> Rejected: brings research architecture into the live integration.
+- Keep live imports pointing at backtest helpers -> Rejected: makes backtest package a runtime dependency.
+
+**Consequences:**
+- Mainline live execution can use the trailing strategy without merging the full backtest stack.
+- Focused tests must protect the shared trailing helper timing behavior.
+
 ### ADR-001: Use Project Notes for AI Handoffs and Worklog (2026-06-25)
 
 **Context:**
@@ -40,4 +58,3 @@ Track durable project decisions here. Use concise ADRs and keep historical conte
 **Consequences:**
 - Agents have a stable place to read and update project context.
 - The process depends on agents consistently following `AGENTS.md`.
-

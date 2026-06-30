@@ -1,0 +1,39 @@
+strategy:
+  name: "bbmr_trailing_stop_v1"
+  mode: "research_backtest"
+  allow_ai_signal: false
+  allow_breakout_trade: false
+  allow_live_trading: false
+  allow_leverage: false
+
+symbols:
+  default: ["BTC", "ETH", "SOL"]
+
+timeframes:
+  signal_tf: "1h"
+  entry_confirm_tf: "15m"
+  execution_tf: "5m"
+
+bollinger:
+  bb_period: 20
+  bb_std_mult: 2.0
+
+rsi:
+  period: 14
+  oversold: 30
+  overbought: 70
+
+trailing_stop:
+  initial_stop_pct: 0.05
+
+costs:
+  taker_fee_bps: 0.0
+  maker_fee_bps: 0.0
+  slippage_bps: 0.0
+
+safety:
+  no_hardcoded_strategy_params: true
+  stop_on_undefined_rule: true
+  allow_liquidation_price_check: false
+  allow_hyperliquid_testnet: false
+  allow_live_trading: false

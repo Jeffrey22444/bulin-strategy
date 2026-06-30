@@ -17,6 +17,9 @@ venv/
 dist/
 build/
 *.egg-info/
+data/
+reports/
+*.sqlite3
 
 # Logs
 *.log

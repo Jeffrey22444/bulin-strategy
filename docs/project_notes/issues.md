@@ -15,6 +15,13 @@ Track planning, handoffs, execution progress, blockers, and completed work here.
 
 ## Entries
 
+### 2026-06-30 - Prepare Hyperliquid Live Mainline Integration
+- **Status**: Completed
+- **Zone**: Execution
+- **Description**: Creating a clean mainline integration branch from `main` for the minimal Hyperliquid testnet live runner loop.
+- **Handoff**: None
+- **Notes**: Working in `/private/tmp/bbmr_hyperliquid_live_mainline` on `feature/hyperliquid-live-mainline`. Selected live/config/script/test files only; `src/bbmr/backtest/`, `tests/backtest/`, `tests/fixtures/`, `data/`, and `reports/` are intentionally excluded. Live trailing helpers were moved to neutral modules. Verification passed with `/Users/jeffrey/Documents/布林带策略/.venv/bin/python -m pytest tests/live -q` (`46 passed`) and `/Users/jeffrey/Documents/布林带策略/.venv/bin/python -m pytest` (`122 passed`).
+
 ### 2026-06-26 - Execute BBMR v3.2 Phase 1C Decision Chain
 - **Status**: Completed
 - **Zone**: Execution
