@@ -15,6 +15,27 @@ Track planning, handoffs, execution progress, blockers, and completed work here.
 
 ## Entries
 
+### 2026-07-01 - Fix Hyperliquid Market Order Price Requirement
+- **Status**: Completed
+- **Zone**: Maintenance
+- **Description**: Applying the smallest runtime-stability fix for Hyperliquid market orders after testnet live run crashed on `price=None`.
+- **Handoff**: None
+- **Notes**: Scope limited to maintenance-zone stability repair. Reused existing market-price fetch path in `HyperliquidClient` for both open and close market orders, added a focused regression test, and verified with `.venv/bin/python -m pytest tests/live/test_hyperliquid_client.py -q` and `.venv/bin/python -m pytest tests/live/test_trailing_runtime.py -q`.
+
+### 2026-07-01 - Update Zone Model And Strategy Consensus
+- **Status**: Completed
+- **Zone**: Planning
+- **Description**: Added four-zone responsibilities and updated strategy consensus for corrected 15m RSI baseline/confirmation rules.
+- **Handoff**: None
+- **Notes**: Added `docs/project_notes/zone_operating_model.md` for Planning/Execution/Acceptance/Maintenance zone boundaries, output formats, `/private/tmp` handoff conventions, and cross-zone interaction flow. `AGENTS.md` now points to that document instead of carrying the full zone model inline. Strategy consensus now states that 15m baseline must be the first completed 15m inside the new 1h setup window, confirmation must stay inside the same 1h window, forming 15m candles are invalid, and terminal output should focus on logic-chain status.
+
+### 2026-06-30 - Document Active Strategy Consensus
+- **Status**: Completed
+- **Zone**: Planning
+- **Description**: Added a shared human/AI-readable strategy consensus document for `bbmr_trailing_stop_v1`.
+- **Handoff**: None
+- **Notes**: Created `docs/strategy_consensus/bbmr_trailing_stop_v1.md` and updated `AGENTS.md` so all zones read it before discussing or changing active strategy/live behavior.
+
 ### 2026-06-30 - Prepare Hyperliquid Live Mainline Integration
 - **Status**: Completed
 - **Zone**: Execution

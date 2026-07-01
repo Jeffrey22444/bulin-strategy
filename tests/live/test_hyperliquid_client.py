@@ -33,6 +33,9 @@ class FakeExchange:
             }
         ]
 
+    def fetch_ticker(self, symbol):
+        return {"last": 123.45}
+
     def fetch_my_trades(self, symbol, since=None, limit=None):
         self.last_my_trades = (symbol, since, limit)
         return [
@@ -72,6 +75,18 @@ def test_client_places_reduce_only_stop_and_cancels_by_id():
     client.cancel_order("BTC", order["id"])
     assert order["params"] == {"stopLossPrice": 95, "reduceOnly": True}
     assert client.exchange.cancelled == [("1", "BTC/USDC:USDC")]
+
+
+def test_client_uses_market_price_for_market_orders():
+    exchange = FakeExchange()
+    client = HyperliquidClient(load_live_config("configs/live_hyperliquid_testnet.yaml"), exchange)
+
+    entry = client.create_market_entry("BTC", "long", 0.1)
+    close = client.close_position_market("BTC", "long", 0.1)
+
+    assert entry["price"] == 123.45
+    assert close["price"] == 123.45
+    assert close["params"] == {"reduceOnly": True}
 
 
 def test_client_fetches_recent_realized_pnl_from_my_trades():

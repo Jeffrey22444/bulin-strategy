@@ -5,11 +5,13 @@
 Use progressive disclosure. Read only what is needed for the current task.
 
 1. Read this file first.
-2. Read `docs/project_notes/key_facts.md` for stable project facts.
-3. Read `docs/project_notes/decisions.md` before planning or changing architecture.
-4. Search `docs/project_notes/bugs.md` before debugging familiar errors.
-5. Read and update `docs/project_notes/issues.md` when work starts, progresses, blocks, or completes.
-6. Read task-specific files only after the relevant memory file points to them or the task requires them.
+2. Read `docs/project_notes/zone_operating_model.md` to confirm your zone responsibilities, boundaries, output format, and cross-zone handoff rules.
+3. Read `docs/project_notes/key_facts.md` for stable project facts.
+4. Read `docs/project_notes/decisions.md` before planning or changing architecture.
+5. Search `docs/project_notes/bugs.md` before debugging familiar errors.
+6. Read `docs/strategy_consensus/bbmr_trailing_stop_v1.md` before discussing or changing the active trading strategy, Hyperliquid live behavior, entry/exit timing, trailing stops, sizing, or manual position handling.
+7. Read and update `docs/project_notes/issues.md` when work starts, progresses, blocks, or completes.
+8. Read task-specific files only after the relevant memory file points to them or the task requires them.
 
 ## Project Memory System
 
@@ -19,6 +21,7 @@ This project keeps institutional knowledge in `docs/project_notes/`.
 - `decisions.md`: architectural decisions and trade-offs.
 - `key_facts.md`: non-sensitive project facts, ports, URLs, paths, and conventions.
 - `issues.md`: worklog for plans, handoffs, execution progress, blockers, and completion notes.
+- `zone_operating_model.md`: responsibilities, boundaries, output preferences, and interaction rules for Planning/Execution/Acceptance/Maintenance zones.
 
 ### Memory Protocol
 
@@ -30,43 +33,27 @@ This project keeps institutional knowledge in `docs/project_notes/`.
 - When making or changing a durable decision, add or update an ADR in `docs/project_notes/decisions.md`.
 - Do not store secrets, tokens, passwords, private keys, or credential values in project notes.
 
-## Planning Zone
+## Zone Operating Model
 
-Planning-zone agents only plan and discuss problems.
+The four-zone workflow is documented in `docs/project_notes/zone_operating_model.md`.
 
-- Clarify the goal, constraints, risks, and acceptance criteria.
-- Check relevant project memory before proposing a plan.
-- Write a handoff for the execution zone when implementation is needed.
-- Do not edit production code unless explicitly asked.
-- Record planning progress, open questions, and handoff links in `docs/project_notes/issues.md`.
+All Planning Zone（规划区）, Execution Zone（执行区）, Acceptance Zone（验收区）, and Maintenance Zone（维护区） agents must read that document before work.
 
-### Handoff Format
+## Strategy Consensus
 
-Use this structure for execution handoffs:
+The active trading-strategy consensus is documented in `docs/strategy_consensus/bbmr_trailing_stop_v1.md`.
 
-```markdown
-## Goal
+All zones should treat that document as the first shared reference for:
 
-## Context
+- `bbmr_trailing_stop_v1`
+- Hyperliquid testnet live behavior
+- 1h setup, 15m RSI confirmation, and 5m entry timing
+- initial stop and trailing-stop rules
+- position sizing
+- manual position adopt/add/close handling
+- live persistence and journal expectations
 
-## Files To Read First
-
-## Steps
-
-## Acceptance Criteria
-
-## Stop Conditions
-```
-
-## Execution Zone
-
-Execution-zone agents only execute the handoff or task document.
-
-- Read this file, relevant project memory, and the supplied handoff.
-- Follow the handoff steps with the smallest working change.
-- Do not add extra features, redesigns, broad refactors, or unsolicited suggestions.
-- If the handoff is ambiguous, blocked, unsafe, or conflicts with project memory, stop and ask the user.
-- Record start, progress, blockers, and completion in `docs/project_notes/issues.md`.
+If a strategy detail is unclear or appears inconsistent with code/tests, stop and clarify with the user or planning zone before proceeding.
 
 ## Editing Rules
 

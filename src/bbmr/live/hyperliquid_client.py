@@ -120,11 +120,25 @@ class HyperliquidClient:
 
     def create_market_entry(self, symbol: str, side: str, qty: float) -> dict:
         order_side = "buy" if side == "long" else "sell"
-        return self.exchange.create_order(to_exchange_symbol(symbol), "market", order_side, qty, None, {})
+        return self.exchange.create_order(
+            to_exchange_symbol(symbol),
+            "market",
+            order_side,
+            qty,
+            self.get_market_price(symbol),
+            {},
+        )
 
     def close_position_market(self, symbol: str, side: str, qty: float) -> dict:
         order_side = "sell" if side == "long" else "buy"
-        return self.exchange.create_order(to_exchange_symbol(symbol), "market", order_side, qty, None, {"reduceOnly": True})
+        return self.exchange.create_order(
+            to_exchange_symbol(symbol),
+            "market",
+            order_side,
+            qty,
+            self.get_market_price(symbol),
+            {"reduceOnly": True},
+        )
 
     def create_reduce_only_stop(self, symbol: str, side: str, qty: float, stop_price: float) -> dict:
         close_side = "sell" if side == "long" else "buy"
