@@ -7,7 +7,7 @@ INITIAL_STOP_PCT = 0.02
 FIVE_MINUTES = pd.Timedelta(minutes=5)
 FIFTEEN_MINUTES = pd.Timedelta(minutes=15)
 ONE_HOUR = pd.Timedelta(hours=1)
-_TIMEFRAMES = {"1h": ONE_HOUR, "15m": FIFTEEN_MINUTES}
+_TIMEFRAMES = {"1h": ONE_HOUR, "15m": FIFTEEN_MINUTES, "5m": FIVE_MINUTES}
 
 
 @dataclass
@@ -16,7 +16,7 @@ class Setup:
     row_1h: pd.Series
     trigger_time: pd.Timestamp
     expiry_time: pd.Timestamp
-    rsi_15m: float
+    rsi_15m: float | None = None
     confirmation_after: pd.Timestamp | None = None
     confirmed_15m: bool = False
     confirm_15m_time: pd.Timestamp | None = None
@@ -38,22 +38,29 @@ def _create_setup(features_1h: pd.DataFrame, features_15m: pd.DataFrame, close_t
     expiry_time = trigger_time + ONE_HOUR
     if not (trigger_time <= close_time < expiry_time):
         return None
-    row_15m = latest_completed_row(features_15m, trigger_time, "15m")
-    if row_15m is None or pd.isna(row_15m.get("rsi14")):
-        return None
     if float(row_1h["close"]) < float(row_1h["lb"]) and float(row_1h["rsi14"]) < config.rsi.oversold:
-        return Setup("long", row_1h.copy(), trigger_time, expiry_time, float(row_15m["rsi14"]), trigger_time)
+        return Setup("long", row_1h.copy(), trigger_time, expiry_time, confirmation_after=trigger_time)
     if float(row_1h["close"]) > float(row_1h["ub"]) and float(row_1h["rsi14"]) > config.rsi.overbought:
-        return Setup("short", row_1h.copy(), trigger_time, expiry_time, float(row_15m["rsi14"]), trigger_time)
+        return Setup("short", row_1h.copy(), trigger_time, expiry_time, confirmation_after=trigger_time)
     return None
 
 
 def _confirm_setup(setup: Setup, features_15m: pd.DataFrame, close_time: pd.Timestamp) -> None:
-    row_15m = latest_completed_row(features_15m, close_time, "15m")
-    if row_15m is None:
+    rows = _setup_window_15m(setup, features_15m, close_time)
+    if rows.empty:
         return
+    if setup.rsi_15m is None:
+        baseline = rows.iloc[0]
+        if pd.isna(baseline.get("rsi14")):
+            return
+        setup.rsi_15m = float(baseline["rsi14"])
+        setup.confirmation_after = baseline.name + FIFTEEN_MINUTES
+        rows = rows.iloc[1:]
+    if rows.empty:
+        return
+    row_15m = rows.iloc[-1]
     confirm_time = row_15m.name + FIFTEEN_MINUTES
-    if confirm_time <= (setup.confirmation_after or setup.trigger_time):
+    if confirm_time <= (setup.confirmation_after or setup.trigger_time) or pd.isna(row_15m.get("rsi14")):
         return
     rsi = float(row_15m["rsi14"])
     if setup.side == "long" and rsi > setup.rsi_15m:
@@ -62,6 +69,16 @@ def _confirm_setup(setup: Setup, features_15m: pd.DataFrame, close_time: pd.Time
     elif setup.side == "short" and rsi < setup.rsi_15m:
         setup.confirmed_15m = True
         setup.confirm_15m_time = confirm_time
+
+
+def _setup_window_15m(setup: Setup, features_15m: pd.DataFrame, close_time: pd.Timestamp) -> pd.DataFrame:
+    completed_at = features_15m.index + FIFTEEN_MINUTES
+    usable = (
+        (features_15m.index >= setup.trigger_time)
+        & (completed_at <= pd.Timestamp(close_time))
+        & (completed_at <= setup.expiry_time)
+    )
+    return features_15m.loc[usable]
 
 
 def _entry_signal(setup: Setup, row_5m: pd.Series) -> bool:

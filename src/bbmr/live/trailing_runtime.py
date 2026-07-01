@@ -11,6 +11,7 @@ from bbmr.trailing import (
     _entry_signal,
     _initial_stop_loss,
     _midpoint,
+    latest_completed_row,
 )
 from bbmr.config import load_config
 from bbmr.live.state_store import LivePendingSetup, LiveStateStore, LiveTrade
@@ -80,7 +81,17 @@ class LiveRuntime:
         events: list[str] = []
         if self._open_local_for_symbol(symbol):
             return events
-        close_time = features_5m.index[-1] + FIVE_MINUTES
+        if self._exchange_position_exists(symbol):
+            events.append(f"{symbol} exchange position exists; waiting")
+            return events
+        if self._exchange_open_orders_exist(symbol):
+            events.append(f"{symbol} open order exists; waiting")
+            return events
+        row_5m = latest_completed_row(features_5m, self._now(), "5m")
+        if row_5m is None:
+            events.append(f"{symbol} waiting for completed 5m candle")
+            return events
+        close_time = row_5m.name + FIVE_MINUTES
         setup = self.setups.get(symbol)
         if setup and close_time >= setup.expiry_time:
             self.store.append_event("setup_expired", symbol, side=setup.side, setup_trigger_time=setup.trigger_time, event_time=close_time)
@@ -93,9 +104,9 @@ class LiveRuntime:
                 self.setups[symbol] = setup
                 self.store.save_pending_setup(_from_setup(symbol, setup))
                 self.store.append_event("setup_created", symbol, side=setup.side, setup_trigger_time=setup.trigger_time, event_time=close_time)
-                events.append(f"{symbol} 1h close and RSI met {setup.side} setup; waiting for 15m RSI reversal")
+                events.append(f"{symbol} 1h setup met; waiting for first 15m RSI baseline")
         if not setup:
-            events.append(f"{symbol} no live setup; waiting")
+            events.append(f"{symbol} waiting for 1h setup")
             return events
 
         was_confirmed = setup.confirmed_15m
@@ -104,13 +115,16 @@ class LiveRuntime:
             self.store.save_pending_setup(_from_setup(symbol, setup))
             self.store.append_event("setup_confirmed_15m", symbol, side=setup.side, setup_trigger_time=setup.trigger_time, event_time=setup.confirm_15m_time)
         if not setup.confirmed_15m:
-            events.append(f"{symbol} waiting for 15m RSI reversal")
+            if setup.rsi_15m is None:
+                events.append(f"{symbol} 1h setup met; waiting for first 15m RSI baseline")
+            else:
+                events.append(f"{symbol} baseline captured; waiting for 15m RSI reversal")
             return events
-        events.append(f"{symbol} 15m RSI reversed; waiting for 5m entry")
-        if not _entry_signal(setup, features_5m.iloc[-1]):
+        events.append(f"{symbol} 15m confirmed; waiting for 5m entry")
+        if not _entry_signal(setup, row_5m):
             return events
 
-        entry_price = float(features_5m.iloc[-1]["close"])
+        entry_price = float(row_5m["close"])
         notional = self.entry_notional(equity)
         qty = notional / entry_price
         stop = _initial_stop_loss(setup.side, entry_price, self.strategy_config.trailing_stop.initial_stop_pct)
@@ -132,9 +146,14 @@ class LiveRuntime:
             order = self.exchange.create_market_entry(symbol, setup.side, self.exchange.format_qty(symbol, qty))
             if order.get("filled"):
                 trade.qty = float(order["filled"])
+            fill_price = _order_fill_price(order)
+            if fill_price is not None:
+                trade.entry_price = fill_price
+                trade.initial_stop_loss = _initial_stop_loss(setup.side, fill_price, self.strategy_config.trailing_stop.initial_stop_pct)
+                trade.current_stop_loss = trade.initial_stop_loss
             self._replace_stop(trade, allow_orders, dry_run)
             self.store.update_trade(trade)
-        events.append(f"{symbol} 5m entry signal; notional={notional:.2f}, qty={qty:.8f}")
+        events.append(f"{symbol} entry opened; notional={notional:.2f}, qty={qty:.8f}")
         self.setups.pop(symbol, None)
         self.store.delete_pending_setup(symbol)
         self.store.append_event("entry_opened", symbol, trade=trade, setup_trigger_time=setup.trigger_time, event_time=close_time)
@@ -163,6 +182,16 @@ class LiveRuntime:
 
     def managed_trade(self, symbol: str) -> LiveTrade | None:
         return self._open_local_for_symbol(symbol)
+
+    def _exchange_position_exists(self, symbol: str) -> bool:
+        fetch = getattr(self.exchange, "fetch_positions", None)
+        if not callable(fetch):
+            return False
+        return any(from_exchange_symbol(position.symbol) == from_exchange_symbol(symbol) for position in fetch())
+
+    def _exchange_open_orders_exist(self, symbol: str) -> bool:
+        fetch = getattr(self.exchange, "fetch_open_orders", None)
+        return bool(fetch(symbol)) if callable(fetch) else False
 
     def _cancel_system_stop(self, trade: LiveTrade, dry_run: bool) -> None:
         if trade.system_stop_order_id and not dry_run:
@@ -273,6 +302,14 @@ def _is_missing_order_error(exc: Exception) -> bool:
     return exc.__class__.__name__ == "OrderNotFound" or any(
         marker in text for marker in ("never placed", "already canceled", "already cancelled", "filled", "not found")
     )
+
+
+def _order_fill_price(order: dict) -> float | None:
+    for key in ("average", "price"):
+        value = order.get(key)
+        if value not in (None, ""):
+            return float(value)
+    return None
 
 
 def _from_setup(symbol: str, setup: Setup) -> LivePendingSetup:

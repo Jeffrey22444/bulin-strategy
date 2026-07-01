@@ -1,13 +1,12 @@
 import argparse
 import time
 
-import pandas as pd
-
 from bbmr.live.config import load_live_config
 from bbmr.live.env import load_project_env
 from bbmr.live.hyperliquid_client import HyperliquidClient, missing_credential_names
 from bbmr.live.state_store import LiveStateStore
 from bbmr.live.trailing_runtime import LiveRuntime, latest_completed_features
+from bbmr.trailing import latest_completed_row
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -55,44 +54,16 @@ def _poll_once(runtime: LiveRuntime, client: HyperliquidClient, symbols: list[st
             print(f"{poll_time} {event}")
         features = latest_completed_features(client, symbol, runtime.strategy_config)
         trade = runtime.managed_trade(symbol)
-        _print_poll_state(poll_time, symbol, features, positions, trade)
         if trade:
-            event = runtime.update_stop(trade, features[0].iloc[-1], features[2].iloc[-1], allow_orders, dry_run)
-            print(f"{poll_time} {event or f'{symbol} managed position; waiting for stop update'}")
+            row_5m = latest_completed_row(features[2], poll_time, "5m")
+            event = runtime.update_stop(trade, features[0].iloc[-1], row_5m, allow_orders, dry_run) if row_5m is not None else None
+            print(f"{poll_time} {event or f'{symbol} managed position; waiting for trailing-stop update'}")
             continue
         events = runtime.maybe_open_strategy_trade(symbol, *features, balance.equity, allow_orders, dry_run)
         for event in events:
             print(f"{poll_time} {event}")
         if not events:
-            print(f"{poll_time} {symbol} waiting for setup")
-
-
-def _print_poll_state(poll_time, symbol: str, features, positions: list, trade) -> None:
-    one_h, fifteen_m, five_m = features
-    row_1h = one_h.iloc[-1]
-    row_15m = fifteen_m.iloc[-1]
-    row_5m = five_m.iloc[-1]
-    print(
-        f"{poll_time} {symbol} poll; "
-        f"latest_1h={_completed_time(one_h, '1h')}; "
-        f"latest_15m={_completed_time(fifteen_m, '15m')}; "
-        f"latest_5m={_completed_time(five_m, '5m')}; "
-        f"1h_close={float(row_1h['close'])}; "
-        f"1h_rsi={float(row_1h['rsi14'])}; "
-        f"1h_lb={float(row_1h['lb'])}; "
-        f"1h_mb={float(row_1h['mb'])}; "
-        f"1h_ub={float(row_1h['ub'])}; "
-        f"15m_rsi={float(row_15m['rsi14'])}; "
-        f"5m_close={float(row_5m['close'])}; "
-        f"5m_high={float(row_5m['high'])}; "
-        f"5m_low={float(row_5m['low'])}; "
-        f"exchange_position={positions}; "
-        f"local_trade={trade.status if trade else 'none'}"
-    )
-
-
-def _completed_time(frame, timeframe: str):
-    return frame.index[-1] + pd.Timedelta(timeframe)
+            print(f"{poll_time} {symbol} waiting for 1h setup")
 
 
 if __name__ == "__main__":

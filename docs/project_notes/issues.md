@@ -15,6 +15,27 @@ Track planning, handoffs, execution progress, blockers, and completed work here.
 
 ## Entries
 
+### 2026-07-01 - Fix Live Trading Correctness P0
+- **Status**: Completed
+- **Zone**: Execution
+- **Description**: Fixing `bbmr_trailing_stop_v1` live P0 correctness issues: new-window 15m RSI baseline, completed 5m filtering, real fill average stops, and minimal exchange position/order entry guards.
+- **Handoff**: None
+- **Notes**: Implemented in `src/bbmr/trailing.py`, `src/bbmr/live/trailing_runtime.py`, `src/bbmr/live/run.py`, and `src/bbmr/live/state_store.py`; added focused live tests. Verification passed with `.venv/bin/python -m pytest tests/live -q` and `.venv/bin/python -m pytest`.
+
+### 2026-07-01 - Review Strategy Optimization Recommendations
+- **Status**: Planned
+- **Zone**: Planning
+- **Description**: Reviewing `/Users/jeffrey/Downloads/bulin_strategy_optimization_recommendations.md` against the active `bbmr_trailing_stop_v1` consensus.
+- **Handoff**: None
+- **Notes**: User approved one combined execution task for live trading correctness: 15m RSI baseline window, completed 5m candle filtering, real fill average price, and minimal open-position/open-order entry guard. Defer broad API cleanup, schema migrations, fixture refactors, stop-update-time/soft-exit fields, and RSI algorithm changes until separately planned.
+
+### 2026-07-01 - Simplify Live Runner Terminal Output
+- **Status**: Completed
+- **Zone**: Execution
+- **Description**: Reducing Hyperliquid live runner regular terminal output from indicator dumps to concise logic-chain status.
+- **Handoff**: None
+- **Notes**: Removed regular indicator/exchange-position dumps from `src/bbmr/live/run.py`, aligned existing runtime event text to concise logic-chain status, and verified with `.venv/bin/python -m pytest tests/live/test_live_run.py tests/live/test_trailing_runtime.py -q` plus `.venv/bin/python -m pytest tests/live -q`.
+
 ### 2026-07-01 - Fix Hyperliquid Market Order Price Requirement
 - **Status**: Completed
 - **Zone**: Maintenance

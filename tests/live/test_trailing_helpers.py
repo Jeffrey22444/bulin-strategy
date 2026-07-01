@@ -22,7 +22,7 @@ def _config():
     return SimpleNamespace(rsi=SimpleNamespace(oversold=30, overbought=70))
 
 
-def test_long_setup_uses_latest_completed_15m_baseline_rsi():
+def test_long_setup_waits_for_new_window_15m_baseline_rsi():
     setup = _create_setup(
         _frame(["2026-01-01 08:00"], [{"close": 95, "lb": 100, "mb": 120, "ub": 140, "rsi14": 20}]),
         _frame(["2026-01-01 08:30", "2026-01-01 08:45"], [{"rsi14": 15}, {"rsi14": 20}]),
@@ -33,7 +33,11 @@ def test_long_setup_uses_latest_completed_15m_baseline_rsi():
     assert setup.side == "long"
     assert setup.trigger_time == _ts("2026-01-01 09:00")
     assert setup.expiry_time == _ts("2026-01-01 10:00")
-    assert setup.rsi_15m == 20
+    assert setup.rsi_15m is None
+
+    _confirm_setup(setup, _frame(["2026-01-01 08:45", "2026-01-01 09:00"], [{"rsi14": 20}, {"rsi14": 25}]), _ts("2026-01-01 09:15"))
+    assert setup.rsi_15m == 25
+    assert setup.confirmed_15m is False
 
 
 def test_confirmation_compares_against_setup_baseline_and_honors_after_boundary():
@@ -46,16 +50,31 @@ def test_confirmation_compares_against_setup_baseline_and_honors_after_boundary(
 
     _confirm_setup(setup, _frame(["2026-01-01 09:00"], [{"rsi14": 25}]), _ts("2026-01-01 09:15"))
     assert setup.confirmed_15m is False
+    assert setup.rsi_15m == 25
 
-    _confirm_setup(setup, _frame(["2026-01-01 09:00"], [{"rsi14": 31}]), _ts("2026-01-01 09:15"))
+    _confirm_setup(setup, _frame(["2026-01-01 09:00", "2026-01-01 09:15"], [{"rsi14": 25}, {"rsi14": 31}]), _ts("2026-01-01 09:30"))
     assert setup.confirmed_15m is True
-    assert setup.confirm_15m_time == _ts("2026-01-01 09:15")
+    assert setup.confirm_15m_time == _ts("2026-01-01 09:30")
 
     setup.confirmed_15m = False
     setup.confirm_15m_time = None
-    setup.confirmation_after = _ts("2026-01-01 09:15")
+    setup.confirmation_after = _ts("2026-01-01 09:30")
     _confirm_setup(setup, _frame(["2026-01-01 09:00", "2026-01-01 09:15"], [{"rsi14": 31}, {"rsi14": 32}]), _ts("2026-01-01 09:30"))
-    assert setup.confirm_15m_time == _ts("2026-01-01 09:30")
+    assert setup.confirm_15m_time is None
+
+
+def test_confirmation_does_not_cross_setup_expiry():
+    setup = _create_setup(
+        _frame(["2026-01-01 08:00"], [{"close": 95, "lb": 100, "mb": 120, "ub": 140, "rsi14": 20}]),
+        _frame(["2026-01-01 09:00"], [{"rsi14": 25}]),
+        _ts("2026-01-01 09:15"),
+        _config(),
+    )
+    _confirm_setup(setup, _frame(["2026-01-01 09:00"], [{"rsi14": 25}]), _ts("2026-01-01 09:15"))
+
+    _confirm_setup(setup, _frame(["2026-01-01 09:00", "2026-01-01 10:00"], [{"rsi14": 25}, {"rsi14": 50}]), _ts("2026-01-01 10:15"))
+
+    assert setup.confirmed_15m is False
 
 
 def test_short_setup_and_entry_signal_boundaries():
@@ -66,7 +85,7 @@ def test_short_setup_and_entry_signal_boundaries():
         _config(),
     )
 
-    _confirm_setup(setup, _frame(["2026-01-01 09:00"], [{"rsi14": 65}]), _ts("2026-01-01 09:15"))
+    _confirm_setup(setup, _frame(["2026-01-01 09:00", "2026-01-01 09:15"], [{"rsi14": 65}, {"rsi14": 60}]), _ts("2026-01-01 09:30"))
 
     assert setup.side == "short"
     assert setup.confirmed_15m is True

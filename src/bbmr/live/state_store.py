@@ -38,7 +38,7 @@ class LivePendingSetup:
     status: str
     trigger_time: pd.Timestamp
     expiry_time: pd.Timestamp
-    setup_rsi_15m: float
+    setup_rsi_15m: float | None
     confirmation_after: pd.Timestamp | None
     confirmed_15m: bool
     confirm_15m_time: pd.Timestamp | None
@@ -186,10 +186,10 @@ class LiveStateStore:
         self.connection.execute(
             """
             UPDATE live_trades
-            SET qty = ?, entry_price = ?, current_stop_loss = ?, system_stop_order_id = ?, pnl_source = ?
+            SET qty = ?, entry_price = ?, initial_stop_loss = ?, current_stop_loss = ?, system_stop_order_id = ?, pnl_source = ?
             WHERE internal_trade_id = ?
             """,
-            (trade.qty, trade.entry_price, trade.current_stop_loss, trade.system_stop_order_id, trade.pnl_source, trade.internal_trade_id),
+            (trade.qty, trade.entry_price, trade.initial_stop_loss, trade.current_stop_loss, trade.system_stop_order_id, trade.pnl_source, trade.internal_trade_id),
         )
         self.connection.commit()
 
@@ -236,7 +236,7 @@ class LiveStateStore:
                 setup.status,
                 _iso(setup.trigger_time),
                 _iso(setup.expiry_time),
-                setup.setup_rsi_15m,
+                _stored_setup_rsi(setup.setup_rsi_15m),
                 _iso(setup.confirmation_after),
                 int(setup.confirmed_15m),
                 _iso(setup.confirm_15m_time),
@@ -343,7 +343,7 @@ def _pending_setup(row: sqlite3.Row) -> LivePendingSetup:
         row["status"],
         _timestamp(row["trigger_time"]),
         _timestamp(row["expiry_time"]),
-        float(row["setup_rsi_15m"]),
+        _loaded_setup_rsi(row["setup_rsi_15m"]),
         _timestamp(row["confirmation_after"]),
         bool(row["confirmed_15m"]),
         _timestamp(row["confirm_15m_time"]),
@@ -374,3 +374,12 @@ def _iso(value) -> str | None:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _stored_setup_rsi(value: float | None) -> float:
+    return -1.0 if value is None else value
+
+
+def _loaded_setup_rsi(value) -> float | None:
+    parsed = float(value)
+    return None if parsed < 0 else parsed

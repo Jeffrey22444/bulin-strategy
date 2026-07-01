@@ -1,11 +1,13 @@
 import json
 
 import pandas as pd
+import pytest
 
 from bbmr.live.config import load_live_config
 from bbmr.live.hyperliquid_client import ExchangePosition
 from bbmr.live.state_store import LiveStateStore
 from bbmr.live.trailing_runtime import LiveRuntime, live_updated_stop
+from bbmr.trailing import Setup
 
 
 class FakeExchange:
@@ -32,6 +34,12 @@ class FakeExchange:
 
     def format_qty(self, symbol, qty):
         return round(qty, 8)
+
+    def fetch_positions(self):
+        return []
+
+    def fetch_open_orders(self, symbol):
+        return []
 
 
 class ClockedExchange(FakeExchange):
@@ -62,6 +70,22 @@ class FailingPnlExchange(FakeExchange):
         raise RuntimeError("trade history unavailable")
 
 
+class AverageFillExchange(ClockedExchange):
+    def create_market_entry(self, symbol, side, qty):
+        self.entries.append((symbol, side, qty))
+        return {"id": "entry-1", "filled": qty, "average": 110}
+
+
+class ExistingPositionExchange(ClockedExchange):
+    def fetch_positions(self):
+        return [ExchangePosition("BTC", "long", 1, 100, 101)]
+
+
+class OpenOrderExchange(ClockedExchange):
+    def fetch_open_orders(self, symbol):
+        return [{"id": "manual-order"}]
+
+
 def _config(tmp_path):
     config = load_live_config("configs/live_hyperliquid_testnet.yaml")
     config.storage.sqlite_path = str(tmp_path / "live.sqlite3")
@@ -89,25 +113,33 @@ def _long_features_with_old_filter_columns():
         [{"open": 120, "high": 121, "low": 90, "close": 95, "lb": 100, "mb": 120, "ub": 140, "rsi14": 20, "range_allowed": False, "lower_band_walking": True}],
     )
     fifteen_m = _frame(
-        ["2026-01-01 08:45", "2026-01-01 09:00"],
-        [{"open": 100, "high": 101, "low": 99, "close": 100, "rsi14": 20}, {"open": 100, "high": 101, "low": 99, "close": 100, "rsi14": 25}],
+        ["2026-01-01 08:45", "2026-01-01 09:00", "2026-01-01 09:15"],
+        [
+            {"open": 100, "high": 101, "low": 99, "close": 100, "rsi14": 20},
+            {"open": 100, "high": 101, "low": 99, "close": 100, "rsi14": 25},
+            {"open": 100, "high": 101, "low": 99, "close": 100, "rsi14": 30},
+        ],
     )
     five_m = _frame(
-        ["2026-01-01 09:10"],
+        ["2026-01-01 09:30"],
         [{"open": 104, "high": 106, "low": 103, "close": 105, "mb": 100, "volume_ratio": 0, "rsi_flat_entry_block": True}],
     )
     return one_h, fifteen_m, five_m
 
 
-def _future_long_features(close_5m=99, close_time="2030-01-01 09:20"):
+def _future_long_features(close_5m=99, close_time="2030-01-01 09:35"):
     close_ts = pd.Timestamp(close_time, tz="UTC")
     one_h = _frame(
         ["2030-01-01 08:00"],
         [{"open": 120, "high": 121, "low": 90, "close": 95, "lb": 100, "mb": 120, "ub": 140, "rsi14": 20}],
     )
     fifteen_m = _frame(
-        ["2030-01-01 08:45", "2030-01-01 09:00"],
-        [{"open": 100, "high": 101, "low": 99, "close": 100, "rsi14": 20}, {"open": 100, "high": 101, "low": 99, "close": 100, "rsi14": 25}],
+        ["2030-01-01 08:45", "2030-01-01 09:00", "2030-01-01 09:15"],
+        [
+            {"open": 100, "high": 101, "low": 99, "close": 100, "rsi14": 20},
+            {"open": 100, "high": 101, "low": 99, "close": 100, "rsi14": 25},
+            {"open": 100, "high": 101, "low": 99, "close": 100, "rsi14": 30},
+        ],
     )
     five_m = _frame(
         [(close_ts - pd.Timedelta(minutes=5)).isoformat()],
@@ -133,7 +165,7 @@ def test_live_strategy_ignores_old_v3_2_filter_columns(tmp_path):
     runtime, exchange = _runtime(tmp_path)
     events = runtime.maybe_open_strategy_trade("BTC", *_long_features_with_old_filter_columns(), 10000, True)
     assert exchange.entries == [("BTC", "long", 28.57142857)]
-    assert any("5m entry signal" in event for event in events)
+    assert any("entry opened" in event for event in events)
 
 
 def test_pending_setup_recovers_after_restart(tmp_path):
@@ -144,20 +176,22 @@ def test_pending_setup_recovers_after_restart(tmp_path):
 
     assert "BTC" in restarted.setups
     assert restarted.setups["BTC"].confirmed_15m is False
+    assert restarted.setups["BTC"].rsi_15m is None
 
 
 def test_confirmed_setup_state_recovers_after_restart(tmp_path):
-    runtime = _runtime_with_exchange(tmp_path, ClockedExchange("2030-01-01 09:20Z"))
+    runtime = _runtime_with_exchange(tmp_path, ClockedExchange("2030-01-01 09:35Z"))
     runtime.maybe_open_strategy_trade("BTC", *_future_long_features(close_5m=99), 10000, False)
 
-    restarted = _runtime_with_exchange(tmp_path, ClockedExchange("2030-01-01 09:21Z"))
+    restarted = _runtime_with_exchange(tmp_path, ClockedExchange("2030-01-01 09:36Z"))
 
     assert restarted.setups["BTC"].confirmed_15m is True
-    assert restarted.setups["BTC"].confirm_15m_time == pd.Timestamp("2030-01-01 09:15Z")
+    assert restarted.setups["BTC"].rsi_15m == 25
+    assert restarted.setups["BTC"].confirm_15m_time == pd.Timestamp("2030-01-01 09:30Z")
 
 
 def test_expired_setup_is_not_recovered_and_is_marked_expired(tmp_path):
-    runtime = _runtime_with_exchange(tmp_path, ClockedExchange("2030-01-01 09:20Z"))
+    runtime = _runtime_with_exchange(tmp_path, ClockedExchange("2030-01-01 09:35Z"))
     runtime.maybe_open_strategy_trade("BTC", *_future_long_features(close_5m=99), 10000, False)
 
     restarted = _runtime_with_exchange(tmp_path, ClockedExchange("2030-01-01 10:00Z"))
@@ -168,12 +202,62 @@ def test_expired_setup_is_not_recovered_and_is_marked_expired(tmp_path):
 
 
 def test_entry_opened_clears_pending_setup(tmp_path):
-    runtime = _runtime_with_exchange(tmp_path, ClockedExchange("2030-01-01 09:20Z"))
+    runtime = _runtime_with_exchange(tmp_path, ClockedExchange("2030-01-01 09:35Z"))
     runtime.maybe_open_strategy_trade("BTC", *_future_long_features(close_5m=105), 10000, False)
 
     assert runtime.setups == {}
     assert runtime.store.connection.execute("SELECT COUNT(*) AS count FROM live_pending_setups").fetchone()["count"] == 0
     assert runtime.store.events()[-1]["event_type"] == "entry_opened"
+
+
+def test_forming_5m_does_not_trigger_entry(tmp_path):
+    runtime = _runtime_with_exchange(tmp_path, ClockedExchange("2030-01-01 09:32Z"))
+    runtime.setups["BTC"] = _confirmed_setup()
+    one_h, fifteen_m, _ = _future_long_features()
+    five_m = _frame(
+        ["2030-01-01 09:25", "2030-01-01 09:30"],
+        [
+            {"open": 99, "high": 100, "low": 98, "close": 99, "mb": 100},
+            {"open": 104, "high": 106, "low": 103, "close": 105, "mb": 100},
+        ],
+    )
+
+    events = runtime.maybe_open_strategy_trade("BTC", one_h, fifteen_m, five_m, 10000, True)
+
+    assert runtime.store.open_trade(runtime.position_key("BTC", "long")) is None
+    assert events == ["BTC 15m confirmed; waiting for 5m entry"]
+
+
+def test_market_entry_average_updates_entry_and_stop(tmp_path):
+    runtime = _runtime_with_exchange(tmp_path, AverageFillExchange("2030-01-01 09:35Z"))
+
+    runtime.maybe_open_strategy_trade("BTC", *_future_long_features(close_5m=105), 10000, True)
+
+    trade = runtime.store.open_trade(runtime.position_key("BTC", "long"))
+    assert trade.entry_price == 110
+    assert trade.initial_stop_loss == pytest.approx(104.5)
+    assert trade.current_stop_loss == pytest.approx(104.5)
+    assert runtime.exchange.stop_orders[-1]["stop"] == pytest.approx(104.5)
+
+
+def test_strategy_entry_skips_when_exchange_position_exists(tmp_path):
+    runtime = _runtime_with_exchange(tmp_path, ExistingPositionExchange("2030-01-01 09:35Z"))
+
+    events = runtime.maybe_open_strategy_trade("BTC", *_future_long_features(close_5m=105), 10000, True)
+
+    assert events == ["BTC exchange position exists; waiting"]
+    assert runtime.exchange.entries == []
+    assert runtime.store.open_trade(runtime.position_key("BTC", "long")) is None
+
+
+def test_strategy_entry_skips_when_exchange_open_order_exists(tmp_path):
+    runtime = _runtime_with_exchange(tmp_path, OpenOrderExchange("2030-01-01 09:35Z"))
+
+    events = runtime.maybe_open_strategy_trade("BTC", *_future_long_features(close_5m=105), 10000, True)
+
+    assert events == ["BTC open order exists; waiting"]
+    assert runtime.exchange.entries == []
+    assert runtime.store.open_trade(runtime.position_key("BTC", "long")) is None
 
 
 def test_manual_position_is_adopted_and_stop_is_created(tmp_path):
@@ -300,3 +384,16 @@ def test_short_low_based_stop_rules():
 def _trade(side, entry, stop):
     runtime_trade = LiveStateStore(":memory:").create_trade(f"acct:testnet:BTC:{side}", "BTC", side, 1, entry, "strategy", stop)
     return runtime_trade
+
+
+def _confirmed_setup():
+    return Setup(
+        "long",
+        pd.Series({"close": 95, "lb": 100, "mb": 120, "ub": 140, "rsi14": 20}),
+        pd.Timestamp("2030-01-01 09:00Z"),
+        pd.Timestamp("2030-01-01 10:00Z"),
+        25,
+        pd.Timestamp("2030-01-01 09:15Z"),
+        True,
+        pd.Timestamp("2030-01-01 09:30Z"),
+    )
