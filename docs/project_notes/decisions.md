@@ -22,6 +22,26 @@ Track durable project decisions here. Use concise ADRs and keep historical conte
 
 ## Decisions
 
+### ADR-003: Indicator Alignment Requires Same Exchange Candle Source (2026-07-01)
+
+**Context:**
+- Hyperliquid and most exchange APIs expose OHLCV candles but not chart indicator values such as RSI.
+- The active live strategy compares locally computed RSI with thresholds and expects those readings to match the exchange website chart closely.
+
+**Decision:**
+- Any RSI value used for live trading must be computed from OHLCV candles fetched from the same exchange environment whose chart is being matched.
+- Hyperliquid testnet live trading uses Hyperliquid testnet candles; Hyperliquid mainnet live trading uses Hyperliquid mainnet candles.
+- Future exchange integrations must compute RSI from that exchange's own candles before claiming chart alignment.
+- RSI formula, method, warmup/history length, and completed-candle handling must be configurable and validated against manually sampled chart readings before live use.
+
+**Alternatives Considered:**
+- Use candles from another exchange or cached research data -> Rejected: RSI cannot reliably match the target website chart.
+- Use local RSI without chart calibration -> Rejected: prior validation found indicator mismatch risk.
+
+**Consequences:**
+- Strategy portability requires per-exchange indicator calibration.
+- Backtest or third-party candles are not acceptable as live indicator authority for chart-matching RSI decisions.
+
 ### ADR-002: Keep Hyperliquid Live Runner Independent From Backtest Package (2026-06-30)
 
 **Context:**

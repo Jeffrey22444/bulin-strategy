@@ -19,14 +19,30 @@ def compute_bw_percentile(bw: pd.Series, lookback: int) -> pd.Series:
     return bw.rolling(lookback).apply(percentile, raw=False)
 
 
-def compute_rsi(close: pd.Series, period: int) -> pd.Series:
+def compute_rsi(close: pd.Series, period: int, method: str = "sma") -> pd.Series:
     delta = close.diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(period).mean()
-    avg_loss = loss.rolling(period).mean()
+    if method == "wilder":
+        avg_gain = _wilder_rma(gain, period)
+        avg_loss = _wilder_rma(loss, period)
+    elif method == "sma":
+        avg_gain = gain.rolling(period).mean()
+        avg_loss = loss.rolling(period).mean()
+    else:
+        raise ValueError("rsi method must be sma or wilder")
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
+
+
+def _wilder_rma(values: pd.Series, period: int) -> pd.Series:
+    result = pd.Series(np.nan, index=values.index, dtype=float)
+    if len(values) <= period:
+        return result
+    result.iloc[period] = values.iloc[1 : period + 1].mean()
+    for index in range(period + 1, len(values)):
+        result.iloc[index] = (result.iloc[index - 1] * (period - 1) + values.iloc[index]) / period
+    return result
 
 
 def compute_atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int) -> pd.Series:

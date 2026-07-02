@@ -29,7 +29,13 @@ class LiveRuntime:
         self.strategy_config = load_config(self.live_config.strategy_config)
         now = self._now()
         self.store.expire_pending_setups(now)
-        self.setups: dict[str, Setup] = {setup.symbol: _to_setup(setup) for setup in self.store.load_pending_setups(now)}
+        self.setups: dict[str, Setup] = {}
+        for pending_setup in self.store.load_pending_setups(now):
+            setup, discard_reason = self._validated_pending_setup(pending_setup, now)
+            if setup:
+                self.setups[pending_setup.symbol] = setup
+            else:
+                self._discard_pending_setup(pending_setup, discard_reason)
         self.pending: dict[str, Setup] = {}
 
     def position_key(self, symbol: str, side: str) -> str:
@@ -77,11 +83,21 @@ class LiveRuntime:
             events.append(f"{symbol} manual position size changed; managing merged exchange quantity")
         return events
 
-    def maybe_open_strategy_trade(self, symbol: str, features_1h: pd.DataFrame, features_15m: pd.DataFrame, features_5m: pd.DataFrame, equity: float, allow_orders: bool, dry_run: bool = False) -> list[str]:
+    def maybe_open_strategy_trade(
+        self,
+        symbol: str,
+        features_1h: pd.DataFrame,
+        features_15m: pd.DataFrame,
+        features_5m: pd.DataFrame,
+        equity: float,
+        allow_orders: bool,
+        dry_run: bool = False,
+        exchange_positions: list | None = None,
+    ) -> list[str]:
         events: list[str] = []
         if self._open_local_for_symbol(symbol):
             return events
-        if self._exchange_position_exists(symbol):
+        if self._exchange_position_exists(symbol, exchange_positions):
             events.append(f"{symbol} exchange position exists; waiting")
             return events
         if self._exchange_open_orders_exist(symbol):
@@ -91,7 +107,7 @@ class LiveRuntime:
         if row_5m is None:
             events.append(f"{symbol} waiting for completed 5m candle")
             return events
-        close_time = row_5m.name + FIVE_MINUTES
+        close_time = _utc_time(row_5m.name + FIVE_MINUTES)
         setup = self.setups.get(symbol)
         if setup and close_time >= setup.expiry_time:
             self.store.append_event("setup_expired", symbol, side=setup.side, setup_trigger_time=setup.trigger_time, event_time=close_time)
@@ -183,7 +199,9 @@ class LiveRuntime:
     def managed_trade(self, symbol: str) -> LiveTrade | None:
         return self._open_local_for_symbol(symbol)
 
-    def _exchange_position_exists(self, symbol: str) -> bool:
+    def _exchange_position_exists(self, symbol: str, positions: list | None = None) -> bool:
+        if positions is not None:
+            return any(from_exchange_symbol(position.symbol) == from_exchange_symbol(symbol) for position in positions)
         fetch = getattr(self.exchange, "fetch_positions", None)
         if not callable(fetch):
             return False
@@ -253,6 +271,58 @@ class LiveRuntime:
         except (KeyError, TypeError, ValueError):
             return None
 
+    def _validated_pending_setup(self, pending_setup: LivePendingSetup, now) -> tuple[Setup | None, str]:
+        try:
+            features_1h, features_15m, features_5m = latest_completed_features(self.exchange, pending_setup.symbol, self.strategy_config)
+        except Exception as exc:
+            return None, f"current candles unavailable: {exc.__class__.__name__}"
+        row_5m = latest_completed_row(features_5m, now, "5m")
+        if row_5m is None:
+            return None, "no completed 5m candle"
+        close_time = _utc_time(row_5m.name + FIVE_MINUTES)
+        if close_time < pending_setup.trigger_time:
+            return None, "before setup trigger window"
+        if close_time >= pending_setup.expiry_time:
+            self.store.append_event(
+                "setup_expired",
+                pending_setup.symbol,
+                side=pending_setup.side,
+                setup_trigger_time=pending_setup.trigger_time,
+                event_time=close_time,
+            )
+            return None, "setup expired"
+        rebuilt = _create_setup(features_1h, features_15m, close_time, self.strategy_config)
+        if rebuilt is None:
+            return None, "1h setup no longer valid"
+        if rebuilt.side != pending_setup.side or not _same_time(rebuilt.trigger_time, pending_setup.trigger_time):
+            return None, "setup side or trigger changed"
+        if not _same_time(rebuilt.expiry_time, pending_setup.expiry_time):
+            return None, "setup expiry changed"
+        if not _same_1h_snapshot(rebuilt.row_1h, pending_setup):
+            return None, "1h setup snapshot changed"
+
+        current = Setup(rebuilt.side, rebuilt.row_1h.copy(), rebuilt.trigger_time, rebuilt.expiry_time, confirmation_after=rebuilt.trigger_time)
+        _confirm_setup(current, features_15m, close_time)
+        if pending_setup.setup_rsi_15m is not None:
+            if current.rsi_15m is None or not _same_number(current.rsi_15m, pending_setup.setup_rsi_15m):
+                return None, "15m baseline changed"
+        if pending_setup.confirmed_15m:
+            if not current.confirmed_15m or not _same_time(current.confirm_15m_time, pending_setup.confirm_15m_time):
+                return None, "15m confirmation changed"
+        return _to_setup(pending_setup), ""
+
+    def _discard_pending_setup(self, pending_setup: LivePendingSetup, reason: str) -> None:
+        self.store.delete_pending_setup(pending_setup.symbol)
+        self.store.append_event(
+            "setup_discarded",
+            pending_setup.symbol,
+            side=pending_setup.side,
+            setup_trigger_time=pending_setup.trigger_time,
+            event_time=self._now(),
+            payload_json=json.dumps({"reason": reason}, sort_keys=True),
+        )
+        print(f"{pending_setup.symbol} pending setup discarded on restart: {reason}")
+
 
 def live_updated_stop(trade: LiveTrade, row_1h: pd.Series, row_5m: pd.Series) -> tuple[float, str]:
     lb_1h = float(row_1h["lb"])
@@ -289,10 +359,12 @@ def live_updated_stop(trade: LiveTrade, row_1h: pd.Series, row_5m: pd.Series) ->
 def latest_completed_features(exchange, symbol: str, strategy_config) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     from bbmr.trailing_features import build_trailing_features
 
+    rsi_limit = strategy_config.rsi.warmup_bars
+    five_m_limit = strategy_config.bollinger.bb_period + 1
     return build_trailing_features(
-        exchange.fetch_ohlcv(symbol, "1h", 100),
-        exchange.fetch_ohlcv(symbol, "15m", 100),
-        exchange.fetch_ohlcv(symbol, "5m", 100),
+        exchange.fetch_ohlcv(symbol, "1h", rsi_limit),
+        exchange.fetch_ohlcv(symbol, "15m", rsi_limit),
+        exchange.fetch_ohlcv(symbol, "5m", five_m_limit),
         strategy_config,
     )
 
@@ -310,6 +382,33 @@ def _order_fill_price(order: dict) -> float | None:
         if value not in (None, ""):
             return float(value)
     return None
+
+
+def _same_time(left, right) -> bool:
+    if left is None or right is None:
+        return left is None and right is None
+    return _utc_time(left) == _utc_time(right)
+
+
+def _utc_time(value) -> pd.Timestamp:
+    timestamp = pd.Timestamp(value)
+    if timestamp.tzinfo is None:
+        return timestamp.tz_localize("UTC")
+    return timestamp.tz_convert("UTC")
+
+
+def _same_number(left, right) -> bool:
+    return abs(float(left) - float(right)) <= 1e-6
+
+
+def _same_1h_snapshot(row_1h: pd.Series, setup: LivePendingSetup) -> bool:
+    return (
+        _same_number(row_1h["close"], setup.close_1h)
+        and _same_number(row_1h["lb"], setup.lb_1h)
+        and _same_number(row_1h["mb"], setup.mb_1h)
+        and _same_number(row_1h["ub"], setup.ub_1h)
+        and _same_number(row_1h["rsi14"], setup.rsi_1h)
+    )
 
 
 def _from_setup(symbol: str, setup: Setup) -> LivePendingSetup:

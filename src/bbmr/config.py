@@ -50,6 +50,15 @@ class RsiSection(StrictModel):
     period: int = Field(gt=0)
     oversold: float = Field(ge=0, le=100)
     overbought: float = Field(ge=0, le=100)
+    method: str = "sma"
+    warmup_bars: int = Field(500, gt=0)
+
+    @field_validator("method")
+    @classmethod
+    def validate_method(cls, value: str) -> str:
+        if value not in {"sma", "wilder"}:
+            raise ValueError("rsi.method must be sma or wilder")
+        return value
 
     @model_validator(mode="after")
     def validate_order(self) -> "RsiSection":

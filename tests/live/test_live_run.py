@@ -68,6 +68,76 @@ def test_live_run_exported_credentials_are_not_overwritten_by_env_file(tmp_path,
     assert captured == {"wallet": "export-wallet", "private": "export-private"}
 
 
+@pytest.mark.parametrize("timeout_at", ["balance", "positions"])
+def test_live_run_continues_next_cycle_on_poll_timeout(tmp_path, monkeypatch, capsys, timeout_at):
+    config_path = _live_config_path(tmp_path)
+
+    class TimeoutClient(_Client):
+        def fetch_balance(self):
+            if timeout_at == "balance":
+                raise TimeoutError("read timed out")
+            return super().fetch_balance()
+
+        def fetch_positions(self):
+            if timeout_at == "positions":
+                raise TimeoutError("read timed out")
+            return super().fetch_positions()
+
+    monkeypatch.setattr("bbmr.live.run.load_project_env", lambda: None)
+    monkeypatch.setattr("bbmr.live.run.missing_credential_names", lambda config: [])
+    monkeypatch.setattr("bbmr.live.run.HyperliquidClient", TimeoutClient)
+
+    assert main(["--live-config", str(config_path), "--once"]) == 0
+
+    output = capsys.readouterr().out
+    assert "2026-01-01 17:15:00+08:00 live poll network error; waiting for next cycle" in output
+
+
+def test_live_run_continues_next_cycle_on_ccxt_network_error(tmp_path, monkeypatch, capsys):
+    from ccxt.base.errors import NetworkError
+
+    config_path = _live_config_path(tmp_path)
+
+    class NetworkFailingClient(_Client):
+        def fetch_balance(self):
+            raise NetworkError("name resolution failed")
+
+    monkeypatch.setattr("bbmr.live.run.load_project_env", lambda: None)
+    monkeypatch.setattr("bbmr.live.run.missing_credential_names", lambda config: [])
+    monkeypatch.setattr("bbmr.live.run.HyperliquidClient", NetworkFailingClient)
+
+    assert main(["--live-config", str(config_path), "--once"]) == 0
+
+    output = capsys.readouterr().out
+    assert "2026-01-01 17:15:00+08:00 live poll network error; waiting for next cycle" in output
+
+
+def test_live_run_unknown_poll_error_still_raises(tmp_path, monkeypatch):
+    config_path = _live_config_path(tmp_path)
+
+    class FailingClient(_Client):
+        def fetch_balance(self):
+            raise RuntimeError("bad state")
+
+    monkeypatch.setattr("bbmr.live.run.load_project_env", lambda: None)
+    monkeypatch.setattr("bbmr.live.run.missing_credential_names", lambda config: [])
+    monkeypatch.setattr("bbmr.live.run.HyperliquidClient", FailingClient)
+
+    with pytest.raises(RuntimeError, match="bad state"):
+        main(["--live-config", str(config_path), "--once"])
+
+
+def test_poll_once_feature_timeout_happens_before_state_changes(tmp_path, monkeypatch):
+    config = _live_config(tmp_path)
+    runtime = LiveRuntime(config, _Exchange(), LiveStateStore(config.storage.sqlite_path))
+    trade = runtime.store.create_trade(runtime.position_key("BTC", "long"), "BTC", "long", 1, 100, "strategy", 95)
+    monkeypatch.setattr("bbmr.live.run.latest_completed_features", lambda client, symbol, strategy_config: (_ for _ in ()).throw(TimeoutError("read timed out")))
+
+    _poll_once(runtime, _NoPositionClient(), ["BTC"], cli_allow_testnet_orders=False, dry_run=True)
+
+    assert runtime.store.open_trade(runtime.position_key("BTC", "long")).internal_trade_id == trade.internal_trade_id
+
+
 def test_poll_once_updates_existing_managed_trade_and_prints_observability(tmp_path, monkeypatch, capsys):
     config = _live_config(tmp_path)
     exchange = _Exchange()
@@ -89,6 +159,7 @@ def test_poll_once_updates_existing_managed_trade_and_prints_observability(tmp_p
     assert "15m_rsi=" not in output
     assert "5m_close=" not in output
     assert "exchange_position=" not in output
+    assert "2026-01-01 17:15:00+08:00" in output
 
 
 def test_poll_once_continues_when_stale_system_stop_cancel_is_missing(tmp_path, monkeypatch, capsys):
@@ -123,6 +194,28 @@ def test_poll_once_does_not_update_stop_from_forming_5m(tmp_path, monkeypatch, c
     assert updated.current_stop_loss == 95
     assert "managed position; waiting for trailing-stop update" in output
     assert "stop moved" not in output
+
+
+def test_poll_once_handles_naive_clock_with_aware_candles(tmp_path, monkeypatch, capsys):
+    config = _live_config(tmp_path)
+    runtime = LiveRuntime(config, _Exchange(), LiveStateStore(config.storage.sqlite_path))
+    runtime.store.create_trade(runtime.position_key("BTC", "long"), "BTC", "long", 1, 100, "strategy", 95)
+    monkeypatch.setattr("bbmr.live.run.latest_completed_features", lambda client, symbol, strategy_config: _features())
+
+    _poll_once(runtime, _NaiveClient(), ["BTC"], cli_allow_testnet_orders=False, dry_run=True)
+
+    assert "2026-01-01 17:15:00+08:00" in capsys.readouterr().out
+
+
+def test_poll_once_reuses_fetched_positions_for_strategy_guard(tmp_path, monkeypatch):
+    config = _live_config(tmp_path)
+    runtime = LiveRuntime(config, _Exchange(), LiveStateStore(config.storage.sqlite_path))
+    client = _CountingNoPositionClient()
+    monkeypatch.setattr("bbmr.live.run.latest_completed_features", lambda client, symbol, strategy_config: _flat_features())
+
+    _poll_once(runtime, client, ["BTC", "ETH"], cli_allow_testnet_orders=False, dry_run=True)
+
+    assert client.position_calls == 1
 
 
 def _live_config(tmp_path):
@@ -210,6 +303,20 @@ class _NoPositionClient(_Client):
 class _FormingClient(_Client):
     def now(self):
         return pd.Timestamp("2026-01-01 09:32", tz="UTC")
+
+
+class _NaiveClient(_Client):
+    def now(self):
+        return pd.Timestamp("2026-01-01 09:15")
+
+
+class _CountingNoPositionClient(_NoPositionClient):
+    def __init__(self):
+        self.position_calls = 0
+
+    def fetch_positions(self):
+        self.position_calls += 1
+        return []
 
 
 class _Exchange:

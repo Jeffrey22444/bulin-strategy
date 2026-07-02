@@ -23,8 +23,9 @@ class Setup:
 
 
 def latest_completed_row(frame: pd.DataFrame, current_5m_time, timeframe: str):
-    completed_at = frame.index + _TIMEFRAMES[timeframe]
-    usable = completed_at <= pd.Timestamp(current_5m_time)
+    index = _utc_index(frame.index)
+    completed_at = index + _TIMEFRAMES[timeframe]
+    usable = completed_at <= _utc_timestamp(current_5m_time)
     if not usable.any():
         return None
     return frame.iloc[usable.nonzero()[0][-1]]
@@ -34,7 +35,7 @@ def _create_setup(features_1h: pd.DataFrame, features_15m: pd.DataFrame, close_t
     row_1h = latest_completed_row(features_1h, close_time, "1h")
     if row_1h is None or pd.isna(row_1h.get("lb")) or pd.isna(row_1h.get("rsi14")):
         return None
-    trigger_time = row_1h.name + ONE_HOUR
+    trigger_time = _utc_timestamp(row_1h.name) + ONE_HOUR
     expiry_time = trigger_time + ONE_HOUR
     if not (trigger_time <= close_time < expiry_time):
         return None
@@ -72,11 +73,12 @@ def _confirm_setup(setup: Setup, features_15m: pd.DataFrame, close_time: pd.Time
 
 
 def _setup_window_15m(setup: Setup, features_15m: pd.DataFrame, close_time: pd.Timestamp) -> pd.DataFrame:
-    completed_at = features_15m.index + FIFTEEN_MINUTES
+    index = _utc_index(features_15m.index)
+    completed_at = index + FIFTEEN_MINUTES
     usable = (
-        (features_15m.index >= setup.trigger_time)
-        & (completed_at <= pd.Timestamp(close_time))
-        & (completed_at <= setup.expiry_time)
+        (index >= _utc_timestamp(setup.trigger_time))
+        & (completed_at <= _utc_timestamp(close_time))
+        & (completed_at <= _utc_timestamp(setup.expiry_time))
     )
     return features_15m.loc[usable]
 
@@ -100,3 +102,17 @@ def _initial_stop_loss(side: str, entry_price: float, initial_stop_pct: float = 
 
 def _midpoint(left: float, right: float) -> float:
     return (left + right) / 2
+
+
+def _utc_timestamp(value) -> pd.Timestamp:
+    timestamp = pd.Timestamp(value)
+    if timestamp.tzinfo is None:
+        return timestamp.tz_localize("UTC")
+    return timestamp.tz_convert("UTC")
+
+
+def _utc_index(index) -> pd.DatetimeIndex:
+    timestamps = pd.DatetimeIndex(index)
+    if timestamps.tz is None:
+        return timestamps.tz_localize("UTC")
+    return timestamps.tz_convert("UTC")

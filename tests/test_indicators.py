@@ -49,3 +49,18 @@ def test_rsi_atr_volume_ratio_and_mb_slope_preserve_index():
     slope = compute_mb_slope(mb, 3)
     assert slope.index.equals(index)
     assert slope.iloc[:5].isna().all()
+
+
+def test_rsi_default_sma_matches_explicit_sma():
+    close = pd.Series([44.34, 44.09, 44.15, 43.61, 44.33, 44.83, 45.10, 45.42, 45.84, 46.08, 45.89, 46.03, 45.61, 46.28, 46.28])
+
+    pd.testing.assert_series_equal(compute_rsi(close, 14), compute_rsi(close, 14, method="sma"))
+
+
+def test_wilder_rsi_uses_rma_smoothing():
+    close = pd.Series([44.34, 44.09, 44.15, 43.61, 44.33, 44.83, 45.10, 45.42, 45.84, 46.08, 45.89, 46.03, 45.61, 46.28, 46.28, 46.00])
+
+    result = compute_rsi(close, 14, method="wilder")
+
+    assert result.iloc[14] == pytest.approx(70.464135)
+    assert result.iloc[15] == pytest.approx(66.249619)

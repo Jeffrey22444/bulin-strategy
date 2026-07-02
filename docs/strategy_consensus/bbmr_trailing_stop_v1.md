@@ -37,10 +37,12 @@ Never use a forming `15m` candle for RSI baseline or RSI reversal confirmation.
   - standard deviation multiplier: `2.0`
 - RSI:
   - period: `14`
+  - method: `wilder`
+  - warmup/history bars: `500`
   - oversold: `30`
   - overbought: `70`
 
-For live use, RSI should follow the Hyperliquid data/chart semantics as closely as the exchange feed allows.
+For live use, RSI must be computed from candles fetched from the same exchange environment whose chart is being matched. Hyperliquid testnet uses Hyperliquid testnet candles; Hyperliquid mainnet uses Hyperliquid mainnet candles.
 
 ## Long Setup Chain
 

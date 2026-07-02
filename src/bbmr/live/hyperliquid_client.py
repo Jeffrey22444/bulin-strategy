@@ -1,6 +1,6 @@
 import os
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pandas as pd
 
@@ -158,7 +158,7 @@ class HyperliquidClient:
         return float(self.exchange.amount_to_precision(to_exchange_symbol(symbol), qty))
 
     def now(self) -> datetime:
-        return datetime.now()
+        return datetime.now(timezone.utc)
 
 
 def missing_credential_names(config) -> list[str]:

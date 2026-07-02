@@ -20,6 +20,8 @@ bollinger:
 
 rsi:
   period: 14
+  method: "wilder"
+  warmup_bars: 500
   oversold: 30
   overbought: 70
 

@@ -15,6 +15,83 @@ Track planning, handoffs, execution progress, blockers, and completed work here.
 
 ## Entries
 
+### 2026-07-02 - Acceptance Intake For Live Runner Network Error Fix
+- **Status**: In Progress
+- **Zone**: Acceptance
+- **Description**: Accepted the maintenance handoff for the live runner DNS/connection crash and will review execution against the approved minimal fix scope instead of repeating diagnosis.
+- **Handoff**: `/private/tmp/bbmr_acceptance_handoff_20260702_network_error.md`
+- **Notes**: Acceptance focus is limited to whether `src/bbmr/live/run.py` keeps transient DNS/connection failures recoverable without swallowing unknown or non-network exceptions, and whether `tests/live/test_live_run.py` covers the new `ccxt.base.errors.NetworkError` path.
+
+### 2026-07-02 - Diagnose Live Runner DNS Resolution Crash
+- **Status**: Completed
+- **Zone**: Maintenance
+- **Description**: Inspected a live-run crash where the runner printed one timeout line and then still exited on a Hyperliquid testnet DNS resolution failure.
+- **Handoff**: None
+- **Notes**: Root cause is in `src/bbmr/live/run.py`: `_is_poll_timeout()` currently treats only read-timeout style exceptions as recoverable, but this crash path is `socket.gaierror -> urllib3 NameResolutionError -> requests.ConnectionError -> ccxt.base.errors.NetworkError`, so the exception is re-raised and the process exits. Existing tests cover `TimeoutError` during balance/positions fetch, but there is no coverage for DNS/name-resolution or generic recoverable network-connectivity failures.
+
+### 2026-07-02 - Keep Live Runner Alive On DNS/Connection Failure
+- **Status**: Completed
+- **Zone**: Execution
+- **Description**: Treating short Hyperliquid testnet DNS/connection failures during poll reads as recoverable network errors.
+- **Handoff**: None
+- **Notes**: Expanded the live poll recoverable read phase to include ccxt `NetworkError` and requests connection failures, changed the log line to `live poll network error; waiting for next cycle`, and kept unknown exceptions re-raised. Verified with `.venv/bin/python -m pytest tests/live/test_live_run.py -q`.
+
+### 2026-07-01 - Run Live System No-Code Stress Tests
+- **Status**: Completed
+- **Zone**: Maintenance
+- **Description**: Executed no-code stress tests against the live trading runtime for long-run polling stability, restart recovery, state isolation, repeated entry/archive cycles, and timeout resilience.
+- **Handoff**: None
+- **Notes**: Used temporary SQLite state plus fake exchange/client harnesses that call real `LiveRuntime` and `_poll_once()` code paths without modifying production code. Verified: 3000 idle polling cycles produced zero trades/setups/events and no SQLite growth; 150 repeated restarts preserved exactly one BTC pending setup without event duplication; 1000 managed-position cycles kept one BTC trade with one stop update only and no ETH/SOL contamination; 1000 timeout-injected cycles produced 220 recoverable timeouts without state pollution; 100 repeated setup->confirm->entry->archive rounds closed cleanly with no leaked pending setup or open trade.
+
+### 2026-07-01 - Keep Live Runner Alive On Read Timeout
+- **Status**: Completed
+- **Zone**: Execution
+- **Description**: Catching transient exchange read timeouts at the live loop boundary so testnet polling continues next cycle.
+- **Handoff**: None
+- **Notes**: Added live-loop handling for recoverable read timeouts with one Beijing-time log line and unknown exceptions still re-raised. The poll now fetches per-symbol features before state-changing reconciliation/open/update work, so OHLCV timeout aborts the cycle cleanly. Verified with `.venv/bin/python -m pytest tests/live/test_live_run.py -q` and `.venv/bin/python -m pytest tests/live -q`.
+
+### 2026-07-01 - Reduce Cross-Zone Workflow Overhead
+- **Status**: Completed
+- **Zone**: Planning
+- **Description**: Updating the zone operating model so Planning/Execution/Acceptance/Maintenance use shorter prompts and fewer handoffs by default.
+- **Handoff**: None
+- **Notes**: Added low-overhead defaults, short Execution/Acceptance/Maintenance cards, progressive 3-5 file read guidance, stricter `/private/tmp` handoff triggers, and a medium-change flow that avoids unnecessary Acceptance Zone prompts unless behavior/safety risk warrants them.
+
+### 2026-07-01 - Validate Restarted Pending Setups And Trim 5m Fetch
+- **Status**: Completed
+- **Zone**: Execution
+- **Description**: Revalidating restored live pending setups against current Hyperliquid candles and reducing 5m OHLCV fetch length without changing RSI alignment.
+- **Handoff**: None
+- **Notes**: Added restart validation that discards pending setups when current candles cannot rebuild the same setup/progress, and reduced 5m fetch length to Bollinger period + one forming-candle allowance. 1h/15m RSI warmup remains 500 because local Hyperliquid testnet calibration requests failed and there is no safe evidence for shortening without risking RSI alignment. Verified with `.venv/bin/python -m pytest tests/live -q`, `.venv/bin/python -m pytest tests/test_indicators.py tests/test_config.py -q`, and `.venv/bin/python -m pytest -q`.
+
+### 2026-07-01 - Align Live RSI Method And Warmup
+- **Status**: Completed
+- **Zone**: Execution
+- **Description**: Adding configurable RSI method and warmup bars for `bbmr_trailing_stop_v1`, using the active live exchange environment's own candles for live RSI calibration.
+- **Handoff**: None
+- **Notes**: Added `sma`/`wilder` RSI method support, defaulted `bbmr_trailing_stop_v1` to `wilder` with `warmup_bars: 500`, used warmup for live Hyperliquid OHLCV fetches, and added read-only `scripts/hyperliquid_rsi_calibration.py`. Verified with `.venv/bin/python -m pytest tests/live -q`, `.venv/bin/python -m pytest tests/test_indicators.py tests/test_config.py -q`, and `.venv/bin/python -m pytest`.
+
+### 2026-07-01 - Plan Hyperliquid RSI Alignment
+- **Status**: Planned
+- **Zone**: Planning
+- **Description**: Discussing how to align locally computed RSI with Hyperliquid chart RSI when the API does not return RSI values.
+- **Handoff**: None
+- **Notes**: Hyperliquid API-visible data exposes OHLCV candles but not RSI. User confirmed candles can come directly from the same Hyperliquid environment used for live/testnet, so the RSI alignment scope is formula replication plus warmup/history length calibration. Durable rule captured in ADR-003: RSI must be computed from candles fetched from the same exchange environment whose website chart is being matched; future mainnet or other exchange integrations must follow the same-source candle rule. Current `compute_rsi()` uses SMA rolling averages, while chart-style RSI is likely Wilder/RMA-based. Planning recommendation is to implement configurable RSI method/history length and validate against manually sampled Hyperliquid chart values before enabling live local-computed RSI decisions. Because this change directly affects live setup/confirmation decisions, it requires a separate Acceptance Zone review prompt.
+
+### 2026-07-01 - Tighten Live Data Source And Restart Recovery
+- **Status**: Blocked
+- **Zone**: Execution
+- **Description**: Evaluating the confirmed hard rule that live trading-chain indicators/prices must come directly from Hyperliquid and stale local pending setup state must not survive restart without current-data validation.
+- **Handoff**: None
+- **Notes**: Stopped before code changes because Hyperliquid documented/API-visible live data provides OHLCV candles/orders/fills/positions, while `bbmr_trailing_stop_v1` currently requires RSI and Bollinger values produced locally by `src/bbmr/trailing_features.py`. Per user stop condition, do not continue local-computed indicators into live trading until Planning/User confirms the minimal replacement approach.
+
+### 2026-07-01 - Fix Live Runner Timezone Output And Completed-Candle Crash
+- **Status**: Completed
+- **Zone**: Execution
+- **Description**: Fixing live runner tz-naive/tz-aware completed-candle comparisons, Beijing terminal display time, and duplicate per-symbol position fetches after log/output changes.
+- **Handoff**: None
+- **Notes**: Normalized completed-candle comparison inputs to UTC-aware timestamps, made client `now()` UTC-aware, converted only terminal display time to Asia/Shanghai, and reused `_poll_once()` positions in strategy entry guards. Verified with `.venv/bin/python -m pytest tests/live -q` and `.venv/bin/python -m pytest`.
+
 ### 2026-07-01 - Fix Live Trading Correctness P0
 - **Status**: Completed
 - **Zone**: Execution

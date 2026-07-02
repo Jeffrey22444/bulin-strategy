@@ -6,8 +6,9 @@ import pytest
 from bbmr.live.config import load_live_config
 from bbmr.live.hyperliquid_client import ExchangePosition
 from bbmr.live.state_store import LiveStateStore
-from bbmr.live.trailing_runtime import LiveRuntime, live_updated_stop
+from bbmr.live.trailing_runtime import LiveRuntime, latest_completed_features, live_updated_stop
 from bbmr.trailing import Setup
+from bbmr.trailing_features import build_trailing_features
 
 
 class FakeExchange:
@@ -86,6 +87,16 @@ class OpenOrderExchange(ClockedExchange):
         return [{"id": "manual-order"}]
 
 
+class RecordingOhlcvExchange(FakeExchange):
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+
+    def fetch_ohlcv(self, symbol, timeframe, limit):
+        self.calls.append((symbol, timeframe, limit))
+        return _frame(["2030-01-01 08:00"], [{"open": 1, "high": 1, "low": 1, "close": 1, "volume": 1}])
+
+
 def _config(tmp_path):
     config = load_live_config("configs/live_hyperliquid_testnet.yaml")
     config.storage.sqlite_path = str(tmp_path / "live.sqlite3")
@@ -161,6 +172,38 @@ def test_testnet_orders_require_config_and_cli(tmp_path):
     assert runtime.can_place_orders(True) is False
 
 
+def test_trailing_features_use_configured_rsi_method(monkeypatch):
+    calls = []
+
+    def fake_rsi(close, period, method="sma"):
+        calls.append(method)
+        return pd.Series(50.0, index=close.index)
+
+    monkeypatch.setattr("bbmr.trailing_features.compute_rsi", fake_rsi)
+    config = __import__("bbmr.config", fromlist=["load_config"]).load_config("configs/strategy_bbmr_trailing_stop_v1.yaml")
+    ohlcv = _frame(
+        ["2030-01-01 08:00", "2030-01-01 08:15", "2030-01-01 08:30"],
+        [
+            {"open": 1, "high": 2, "low": 0, "close": 1, "volume": 1},
+            {"open": 2, "high": 3, "low": 1, "close": 2, "volume": 1},
+            {"open": 3, "high": 4, "low": 2, "close": 3, "volume": 1},
+        ],
+    )
+
+    build_trailing_features(ohlcv, ohlcv, ohlcv, config)
+
+    assert calls == ["wilder", "wilder"]
+
+
+def test_latest_completed_features_uses_rsi_warmup_bars(tmp_path):
+    runtime, _ = _runtime(tmp_path)
+    exchange = RecordingOhlcvExchange()
+
+    latest_completed_features(exchange, "BTC", runtime.strategy_config)
+
+    assert exchange.calls == [("BTC", "1h", 500), ("BTC", "15m", 500), ("BTC", "5m", 21)]
+
+
 def test_live_strategy_ignores_old_v3_2_filter_columns(tmp_path):
     runtime, exchange = _runtime(tmp_path)
     events = runtime.maybe_open_strategy_trade("BTC", *_long_features_with_old_filter_columns(), 10000, True)
@@ -168,9 +211,10 @@ def test_live_strategy_ignores_old_v3_2_filter_columns(tmp_path):
     assert any("entry opened" in event for event in events)
 
 
-def test_pending_setup_recovers_after_restart(tmp_path):
+def test_pending_setup_recovers_after_restart(tmp_path, monkeypatch):
     runtime = _runtime_with_exchange(tmp_path, ClockedExchange("2030-01-01 09:05Z"))
     runtime.maybe_open_strategy_trade("BTC", *_future_long_features(close_5m=99, close_time="2030-01-01 09:05"), 10000, False)
+    monkeypatch.setattr("bbmr.live.trailing_runtime.latest_completed_features", lambda exchange, symbol, config: _future_long_features(close_5m=99, close_time="2030-01-01 09:05"))
 
     restarted = _runtime_with_exchange(tmp_path, ClockedExchange("2030-01-01 09:06Z"))
 
@@ -179,9 +223,10 @@ def test_pending_setup_recovers_after_restart(tmp_path):
     assert restarted.setups["BTC"].rsi_15m is None
 
 
-def test_confirmed_setup_state_recovers_after_restart(tmp_path):
+def test_confirmed_setup_state_recovers_after_restart(tmp_path, monkeypatch):
     runtime = _runtime_with_exchange(tmp_path, ClockedExchange("2030-01-01 09:35Z"))
     runtime.maybe_open_strategy_trade("BTC", *_future_long_features(close_5m=99), 10000, False)
+    monkeypatch.setattr("bbmr.live.trailing_runtime.latest_completed_features", lambda exchange, symbol, config: _future_long_features(close_5m=99))
 
     restarted = _runtime_with_exchange(tmp_path, ClockedExchange("2030-01-01 09:36Z"))
 
@@ -190,9 +235,24 @@ def test_confirmed_setup_state_recovers_after_restart(tmp_path):
     assert restarted.setups["BTC"].confirm_15m_time == pd.Timestamp("2030-01-01 09:30Z")
 
 
-def test_expired_setup_is_not_recovered_and_is_marked_expired(tmp_path):
+def test_mismatched_pending_setup_is_discarded_after_restart(tmp_path, monkeypatch):
+    runtime = _runtime_with_exchange(tmp_path, ClockedExchange("2030-01-01 09:05Z"))
+    runtime.maybe_open_strategy_trade("BTC", *_future_long_features(close_5m=99, close_time="2030-01-01 09:05"), 10000, False)
+    one_h, fifteen_m, five_m = _future_long_features(close_5m=99, close_time="2030-01-01 09:05")
+    one_h.loc[pd.Timestamp("2030-01-01 08:00Z"), "close"] = 96
+    monkeypatch.setattr("bbmr.live.trailing_runtime.latest_completed_features", lambda exchange, symbol, config: (one_h, fifteen_m, five_m))
+
+    restarted = _runtime_with_exchange(tmp_path, ClockedExchange("2030-01-01 09:06Z"))
+
+    assert restarted.setups == {}
+    assert restarted.store.connection.execute("SELECT COUNT(*) AS count FROM live_pending_setups").fetchone()["count"] == 0
+    assert restarted.store.events()[-1]["event_type"] == "setup_discarded"
+
+
+def test_expired_setup_is_not_recovered_and_is_marked_expired(tmp_path, monkeypatch):
     runtime = _runtime_with_exchange(tmp_path, ClockedExchange("2030-01-01 09:35Z"))
     runtime.maybe_open_strategy_trade("BTC", *_future_long_features(close_5m=99), 10000, False)
+    monkeypatch.setattr("bbmr.live.trailing_runtime.latest_completed_features", lambda exchange, symbol, config: _future_long_features(close_5m=99))
 
     restarted = _runtime_with_exchange(tmp_path, ClockedExchange("2030-01-01 10:00Z"))
 

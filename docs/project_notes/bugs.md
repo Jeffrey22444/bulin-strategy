@@ -14,6 +14,18 @@ Track recurring or instructive bugs here. Keep entries brief and chronological.
 
 ## Entries
 
+### 2026-07-01 - Live runner exited on transient exchange read timeout
+- **Issue**: Hyperliquid testnet read timeouts or short network failures from balance, positions, or candle fetches could bubble out of the live loop and stop the runner.
+- **Root Cause**: `_poll_once()` exchange reads were called without a live-loop boundary for recoverable timeout exceptions.
+- **Solution**: Catch known read timeout and network-connectivity exceptions around the read-only poll phase, print one concise Beijing-time network-error line, and continue to the next cycle while re-raising unknown exceptions.
+- **Prevention**: Focused live-run tests cover timeout during `fetch_balance`, ccxt `NetworkError`, feature-fetch timeout before state changes, plus unknown exception propagation.
+
+### 2026-07-01 - Live runner crashed on tz-naive/tz-aware completed-candle comparisons
+- **Issue**: After live terminal output was reduced, completed-candle checks could compare UTC-aware OHLCV indexes against tz-naive runtime timestamps and crash.
+- **Root Cause**: `HyperliquidClient.now()` returned naive local datetimes, while exchange OHLCV indexes were UTC-aware; `latest_completed_row()` did not normalize either side before comparison.
+- **Solution**: Normalize completed-candle helper inputs to UTC-aware timestamps, return UTC-aware client `now()`, and convert only terminal display timestamps to Asia/Shanghai.
+- **Prevention**: Focused live tests cover naive-clock/aware-candle comparisons, Beijing terminal output, and avoiding duplicate per-symbol position fetches.
+
 ### 2026-07-01 - Live trailing strategy used stale/forming data around entry
 - **Issue**: `bbmr_trailing_stop_v1` live path could use the previous 1h window's last 15m RSI as baseline, act on a forming 5m candle, keep estimated entry stop after an exchange average fill, or strategy-open while an exchange position/order already existed.
 - **Root Cause**: The shared trailing helper captured 15m baseline at setup creation using `trigger_time`, while live runtime used the last 5m row directly and lacked final exchange position/open-order guards before strategy entry.

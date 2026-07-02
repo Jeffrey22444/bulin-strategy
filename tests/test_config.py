@@ -32,6 +32,8 @@ def test_loads_trailing_strategy_config():
     config = load_config(TRAILING_CONFIG_PATH)
     assert config.strategy.name == "bbmr_trailing_stop_v1"
     assert 0 < config.trailing_stop.initial_stop_pct < 1
+    assert config.rsi.method == "wilder"
+    assert config.rsi.warmup_bars == 500
 
 
 def test_trailing_stop_initial_stop_pct_defaults_to_2_percent():
