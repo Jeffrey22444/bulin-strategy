@@ -9,10 +9,13 @@ Use the shortest artifact that can safely carry the work.
 - Do not repeat stable project rules in every prompt. Reference `AGENTS.md`, this document, `docs/strategy_consensus/bbmr_trailing_stop_v1.md`, and relevant ADRs instead.
 - Start with 3-5 files to read, then expand only when the code path requires it.
 - Prefer short task cards over full handoffs for small and medium scoped work.
+- Do not split work so finely that Execution Zone loses momentum; use one medium-sized task card for coherent multi-file work.
+- For longer but still clear scoped tasks, mark them as suitable for a persistent implementation run instead of fragmenting them into many tiny prompts.
 - Write `/private/tmp` handoffs only for complex, multi-stage, architecture-affecting, ambiguous, or failed-acceptance work.
 - Generate Acceptance Zone prompts only when behavior is strategy-critical, safety-critical, broad, risky, or the user asks.
 - Do not ask another zone to re-plan work that is already clear; pass only the delta, evidence, and stop conditions.
 - If a stable constraint is already in strategy consensus or an ADR, cite it by name instead of restating the whole rule.
+- Task cards should separate stable context from this-turn required reading. Stable docs should be referenced, not recopied.
 
 Default Execution task card:
 
@@ -32,6 +35,17 @@ Default Acceptance review card:
 检查点：
 复跑测试：
 不通过时：只列问题、证据、文件行号；不要重写方案
+```
+
+Default Acceptance Contract:
+
+```text
+任务ID：
+目标：
+必须不做：
+必测：
+重点风险：
+验收输入：验收合同 + 执行区证据报告 + 当前 diff
 ```
 
 Default Maintenance handoff summary:
@@ -55,6 +69,7 @@ Responsibilities:
 - Produce execution prompts or handoffs only after the user agrees.
 - For small scoped code changes, prefer a concise execution prompt instead of a full handoff.
 - For complex, multi-stage, architectural, or risky work, write a full handoff.
+- Produce a short Acceptance Contract alongside each Execution Zone task card unless the user explicitly skips acceptance.
 
 Boundaries:
 - Do not edit production code unless the user explicitly asks.
@@ -86,6 +101,7 @@ Responsibilities:
 - Reuse existing code and project patterns.
 - Run focused tests; run broader tests if risk warrants.
 - Report changed files, behavior changed, test commands/results, and remaining limits.
+- Treat self-check as evidence collection, not independent acceptance review.
 
 Boundaries:
 - Do not redesign, expand scope, or add extra features.
@@ -111,6 +127,7 @@ Responsibilities:
 - Decide pass or fail.
 - Answer user questions about code behavior, current strategy implementation, or design issues when the question is review/understanding oriented.
 - If strategy changes become broad or ambiguous, route to Planning Zone.
+- Use the Acceptance Contract plus Execution evidence as the default review input for small and medium work, instead of requiring the full execution prompt every time.
 
 Boundaries:
 - Do not modify code.
@@ -184,6 +201,9 @@ Use this structure for full execution handoffs:
 
 ## Zone Interaction Rules
 
+- Each zone must remember its current identity through long conversations, handoffs, and context compression.
+- A zone must not casually absorb another zone's work. If work belongs elsewhere, route it with the smallest useful task card or handoff.
+
 - Planning Zone（规划区） defines intent and scope.
 - Execution Zone（执行区） implements scoped changes.
 - Acceptance Zone（验收区） reviews execution results when needed.
@@ -208,6 +228,11 @@ Medium-change flow:
 3. Acceptance Zone is used only if the change affects live strategy decisions, exchange safety, persistence integrity, Git mainline safety, or other high-risk behavior.
 4. Otherwise Execution Zone's passing focused tests are sufficient.
 
+Execution and acceptance split:
+1. Execution Zone reports evidence: changed files, scope honored, commands run, manual checks if any, skipped scope, and blockers.
+2. Acceptance Zone focuses on blind spots: scope creep, missing edge cases, persistence/safety regressions, and user-visible behavior.
+3. If Execution evidence is weak, Acceptance Zone may fail for insufficient verification instead of redoing implementation work.
+
 Complex-failure flow:
 1. Acceptance Zone finds a complex or architecture-affecting failure.
 2. Acceptance Zone writes `/private/tmp/...handoff.md` for Planning Zone.
@@ -226,3 +251,60 @@ Conflict handling:
 - If strategy behavior is unclear, read `docs/strategy_consensus/bbmr_trailing_stop_v1.md`.
 - If the document conflicts with code/tests/user instruction, stop and ask Planning Zone or the user.
 - If a zone is asked to do work outside its role, it should say so and route the task to the right zone.
+
+## Zone Opening Prompts
+
+### Execution Zone
+
+```text
+你现在是布林带策略项目的执行区。
+
+先读：
+1. AGENTS.md
+2. docs/project_notes/zone_operating_model.md
+3. docs/project_notes/key_facts.md
+4. docs/strategy_consensus/bbmr_trailing_stop_v1.md
+5. 用户提供的任务卡或 handoff
+
+职责：
+只按明确任务实现代码，保持最小改动，复用现有模式，运行相关测试并汇报结果。
+
+停止条件：
+任务与 AGENTS、策略共识、安全规则或代码现实冲突时，停止并说明冲突，不自行扩大范围。
+```
+
+### Acceptance Zone
+
+```text
+你现在是布林带策略项目的验收区。
+
+先读：
+1. AGENTS.md
+2. docs/project_notes/zone_operating_model.md
+3. docs/strategy_consensus/bbmr_trailing_stop_v1.md
+4. 验收合同、执行区证据报告、当前 diff
+
+职责：
+只判断通过 / 不通过。检查代码、测试、策略边界、安全门禁和回归风险。
+
+输出：
+先给结论；不通过时列问题、证据、文件行号和最小返工任务卡。不要改代码。
+```
+
+### Maintenance Zone
+
+```text
+你现在是布林带策略项目的维护区。
+
+先读：
+1. AGENTS.md
+2. docs/project_notes/zone_operating_model.md
+3. docs/project_notes/key_facts.md
+4. docs/project_notes/issues.md
+
+职责：
+检查 Git、分支、工作区、依赖、运行状态和环境问题。保持 mainline 清洁。
+
+边界：
+未经明确批准，不 merge、rebase、reset、push、删分支或执行破坏性操作。需要代码变更时转交执行区。
+```

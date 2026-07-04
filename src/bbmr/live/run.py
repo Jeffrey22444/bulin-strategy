@@ -42,11 +42,14 @@ def main(argv: list[str] | None = None) -> int:
     client = HyperliquidClient(config)
 
     runtime = LiveRuntime(config, client, store)
+    next_full_poll_at = None
     while True:
-        _poll_once(runtime, client, symbols, args.allow_testnet_orders, args.dry_run)
+        if _should_full_poll(runtime, client, symbols, config, next_full_poll_at):
+            _poll_once(runtime, client, symbols, args.allow_testnet_orders, args.dry_run)
+            next_full_poll_at = _next_poll_time_after_full_poll(runtime, client, symbols, config)
         if args.once:
             return 0
-        time.sleep(config.execution.poll_seconds)
+        time.sleep(_next_sleep_seconds(client.now(), next_full_poll_at, config))
 
 
 def _poll_once(runtime: LiveRuntime, client: HyperliquidClient, symbols: list[str], cli_allow_testnet_orders: bool, dry_run: bool) -> None:
@@ -80,10 +83,63 @@ def _poll_once(runtime: LiveRuntime, client: HyperliquidClient, symbols: list[st
 
 
 def _display_time(value) -> pd.Timestamp:
+    return _utc_time(value).tz_convert("Asia/Shanghai")
+
+
+def _utc_time(value) -> pd.Timestamp:
     timestamp = pd.Timestamp(value)
     if timestamp.tzinfo is None:
-        timestamp = timestamp.tz_localize("UTC")
-    return timestamp.tz_convert("Asia/Shanghai")
+        return timestamp.tz_localize("UTC")
+    return timestamp.tz_convert("UTC")
+
+
+def _next_1h_wake_time(now, grace_seconds: int) -> pd.Timestamp:
+    current_hour = _utc_time(now).floor("h") + pd.Timedelta(seconds=grace_seconds)
+    if _utc_time(now) <= current_hour:
+        return current_hour
+    return current_hour + pd.Timedelta(hours=1)
+
+
+def _runtime_has_local_state(runtime: LiveRuntime, symbols: list[str]) -> bool:
+    return any(runtime.managed_trade(symbol) for symbol in symbols) or any(symbol in runtime.setups for symbol in symbols)
+
+
+def _light_guard_detects_active_state(runtime: LiveRuntime, client: HyperliquidClient, symbols: list[str], active_on_network_error: bool = False) -> bool:
+    if _runtime_has_local_state(runtime, symbols):
+        return True
+    try:
+        positions = client.fetch_positions()
+        if any(position.symbol in symbols for position in positions):
+            return True
+        return any(client.fetch_open_orders(symbol) for symbol in symbols)
+    except Exception as exc:
+        if not _is_recoverable_poll_network_error(exc):
+            raise
+        print(f"{_display_time(client.now())} live poll network error; waiting for next cycle")
+        return active_on_network_error
+
+
+def _should_full_poll(runtime: LiveRuntime, client: HyperliquidClient, symbols: list[str], config, next_full_poll_at: pd.Timestamp | None) -> bool:
+    return (
+        not config.execution.idle_1h_aligned_poll
+        or next_full_poll_at is None
+        or _utc_time(client.now()) >= _utc_time(next_full_poll_at)
+        or _light_guard_detects_active_state(runtime, client, symbols)
+    )
+
+
+def _next_poll_time_after_full_poll(runtime: LiveRuntime, client: HyperliquidClient, symbols: list[str], config) -> pd.Timestamp:
+    now = _utc_time(client.now())
+    if not config.execution.idle_1h_aligned_poll or _light_guard_detects_active_state(runtime, client, symbols, active_on_network_error=True):
+        return now + pd.Timedelta(seconds=config.execution.poll_seconds)
+    return _next_1h_wake_time(now, config.execution.idle_candle_grace_seconds)
+
+
+def _next_sleep_seconds(now, next_full_poll_at: pd.Timestamp | None, config) -> float:
+    if not config.execution.idle_1h_aligned_poll or next_full_poll_at is None:
+        return float(config.execution.poll_seconds)
+    seconds_to_full = max(0.0, (_utc_time(next_full_poll_at) - _utc_time(now)).total_seconds())
+    return max(0.0, min(seconds_to_full, float(config.execution.idle_position_guard_seconds), float(config.execution.poll_seconds)))
 
 
 def _is_recoverable_poll_network_error(exc: Exception) -> bool:

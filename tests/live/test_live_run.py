@@ -6,7 +6,15 @@ import yaml
 
 from bbmr.live.hyperliquid_client import ExchangePosition
 from bbmr.live.env import load_project_env
-from bbmr.live.run import _poll_once, main
+from bbmr.live.run import (
+    _light_guard_detects_active_state,
+    _next_1h_wake_time,
+    _next_poll_time_after_full_poll,
+    _next_sleep_seconds,
+    _poll_once,
+    _should_full_poll,
+    main,
+)
 from bbmr.live.state_store import LiveStateStore
 from bbmr.live.trailing_runtime import LiveRuntime
 
@@ -66,6 +74,19 @@ def test_live_run_exported_credentials_are_not_overwritten_by_env_file(tmp_path,
 
     assert main(["--live-config", str(config_path), "--once"]) == 0
     assert captured == {"wallet": "export-wallet", "private": "export-private"}
+
+
+def test_live_run_once_still_full_polls_immediately(tmp_path, monkeypatch):
+    config_path = _live_config_path(tmp_path)
+    calls = []
+
+    monkeypatch.setattr("bbmr.live.run.load_project_env", lambda: None)
+    monkeypatch.setattr("bbmr.live.run.missing_credential_names", lambda config: [])
+    monkeypatch.setattr("bbmr.live.run.HyperliquidClient", _NoPositionClient)
+    monkeypatch.setattr("bbmr.live.run._poll_once", lambda *args, **kwargs: calls.append("full"))
+
+    assert main(["--live-config", str(config_path), "--once"]) == 0
+    assert calls == ["full"]
 
 
 @pytest.mark.parametrize("timeout_at", ["balance", "positions"])
@@ -136,6 +157,84 @@ def test_poll_once_feature_timeout_happens_before_state_changes(tmp_path, monkey
     _poll_once(runtime, _NoPositionClient(), ["BTC"], cli_allow_testnet_orders=False, dry_run=True)
 
     assert runtime.store.open_trade(runtime.position_key("BTC", "long")).internal_trade_id == trade.internal_trade_id
+
+
+def test_next_1h_wake_time_uses_grace():
+    assert _next_1h_wake_time(pd.Timestamp("2026-01-01 09:15:00Z"), 10) == pd.Timestamp("2026-01-01 10:00:10Z")
+    assert _next_1h_wake_time(pd.Timestamp("2026-01-01 09:00:05Z"), 10) == pd.Timestamp("2026-01-01 09:00:10Z")
+    assert _next_1h_wake_time(pd.Timestamp("2026-01-01 09:00:11Z"), 10) == pd.Timestamp("2026-01-01 10:00:10Z")
+
+
+def test_idle_light_guard_does_not_fetch_ohlcv(tmp_path):
+    runtime = LiveRuntime(_live_config(tmp_path), _Exchange(), LiveStateStore(_live_config(tmp_path).storage.sqlite_path))
+    client = _NoPositionClient()
+
+    assert _light_guard_detects_active_state(runtime, client, ["BTC", "ETH"]) is False
+    assert client.open_order_calls == ["BTC", "ETH"]
+    assert client.ohlcv_calls == 0
+
+
+def test_idle_waits_until_1h_wake_for_full_poll(tmp_path):
+    config = _live_config(tmp_path)
+    runtime = LiveRuntime(config, _Exchange(), LiveStateStore(config.storage.sqlite_path))
+    client = _NoPositionClient()
+    next_full = pd.Timestamp("2026-01-01 10:00:10Z")
+
+    assert _should_full_poll(runtime, client, ["BTC"], config, next_full) is False
+    client._now = pd.Timestamp("2026-01-01 10:00:10Z")
+    assert _should_full_poll(runtime, client, ["BTC"], config, next_full) is True
+
+
+def test_idle_sleep_caps_at_guard_and_full_poll(tmp_path):
+    config = _live_config(tmp_path)
+    assert _next_sleep_seconds(pd.Timestamp("2026-01-01 09:59:55Z"), pd.Timestamp("2026-01-01 10:00:10Z"), config) == 15
+    assert _next_sleep_seconds(pd.Timestamp("2026-01-01 09:15:00Z"), pd.Timestamp("2026-01-01 10:00:10Z"), config) == 30
+
+
+def test_active_states_trigger_full_poll(tmp_path):
+    config = _live_config(tmp_path)
+    runtime = LiveRuntime(config, _Exchange(), LiveStateStore(config.storage.sqlite_path))
+    future = pd.Timestamp("2026-01-01 10:00:10Z")
+
+    runtime.store.create_trade(runtime.position_key("BTC", "long"), "BTC", "long", 1, 100, "strategy", 95)
+    assert _should_full_poll(runtime, _NoPositionClient(), ["BTC"], config, future) is True
+
+    runtime = LiveRuntime(config, _Exchange(), LiveStateStore(str(tmp_path / "pending.sqlite3")))
+    runtime.setups["BTC"] = object()
+    assert _should_full_poll(runtime, _NoPositionClient(), ["BTC"], config, future) is True
+
+    runtime = LiveRuntime(config, _Exchange(), LiveStateStore(str(tmp_path / "position.sqlite3")))
+    assert _should_full_poll(runtime, _PositionClient(), ["BTC"], config, future) is True
+
+    runtime = LiveRuntime(config, _Exchange(), LiveStateStore(str(tmp_path / "order.sqlite3")))
+    assert _should_full_poll(runtime, _OpenOrderClient(), ["BTC"], config, future) is True
+
+
+def test_manual_close_archived_then_scheduler_returns_to_idle(tmp_path, monkeypatch):
+    config = _live_config(tmp_path)
+    runtime = LiveRuntime(config, _Exchange(), LiveStateStore(config.storage.sqlite_path))
+    runtime.store.create_trade(runtime.position_key("BTC", "long"), "BTC", "long", 1, 100, "strategy", 95)
+    monkeypatch.setattr("bbmr.live.run.latest_completed_features", lambda client, symbol, strategy_config: _flat_features())
+
+    _poll_once(runtime, _NoPositionClient(), ["BTC"], cli_allow_testnet_orders=False, dry_run=True)
+
+    assert runtime.managed_trade("BTC") is None
+    assert _next_poll_time_after_full_poll(runtime, _NoPositionClient(), ["BTC"], config) == _next_1h_wake_time(_NoPositionClient().now(), 10)
+
+
+def test_idle_scheduler_disabled_keeps_full_poll_behavior(tmp_path):
+    config = _live_config(tmp_path)
+    config.execution.idle_1h_aligned_poll = False
+    runtime = LiveRuntime(config, _Exchange(), LiveStateStore(config.storage.sqlite_path))
+
+    assert _should_full_poll(runtime, _NoPositionClient(), ["BTC"], config, pd.Timestamp("2030-01-01 10:00:10Z")) is True
+
+
+def test_recoverable_guard_error_after_full_poll_keeps_30s_poll(tmp_path):
+    config = _live_config(tmp_path)
+    runtime = LiveRuntime(config, _Exchange(), LiveStateStore(config.storage.sqlite_path))
+
+    assert _next_poll_time_after_full_poll(runtime, _NetworkErrorClient(), ["BTC"], config) == pd.Timestamp("2026-01-01 09:15:30Z")
 
 
 def test_poll_once_updates_existing_managed_trade_and_prints_observability(tmp_path, monkeypatch, capsys):
@@ -283,10 +382,12 @@ def _forming_stop_features():
 
 class _Client:
     def __init__(self, *args, **kwargs):
-        pass
+        self._now = pd.Timestamp("2026-01-01 09:15", tz="UTC")
+        self.open_order_calls = []
+        self.ohlcv_calls = 0
 
     def now(self):
-        return pd.Timestamp("2026-01-01 09:15", tz="UTC")
+        return getattr(self, "_now", pd.Timestamp("2026-01-01 09:15", tz="UTC"))
 
     def fetch_balance(self):
         return SimpleNamespace(equity=10000)
@@ -294,10 +395,34 @@ class _Client:
     def fetch_positions(self):
         return [ExchangePosition("BTC", "long", 1, 100, 130)]
 
+    def fetch_open_orders(self, symbol):
+        self.open_order_calls.append(symbol)
+        return []
+
+    def fetch_ohlcv(self, symbol, timeframe, limit):
+        self.ohlcv_calls += 1
+        raise AssertionError("idle guard must not fetch OHLCV")
+
 
 class _NoPositionClient(_Client):
     def fetch_positions(self):
         return []
+
+
+class _PositionClient(_Client):
+    def fetch_positions(self):
+        return [ExchangePosition("BTC", "long", 1, 100, 101)]
+
+
+class _OpenOrderClient(_NoPositionClient):
+    def fetch_open_orders(self, symbol):
+        self.open_order_calls.append(symbol)
+        return [{"id": "open-order"}]
+
+
+class _NetworkErrorClient(_NoPositionClient):
+    def fetch_positions(self):
+        raise TimeoutError("read timed out")
 
 
 class _FormingClient(_Client):
@@ -312,6 +437,7 @@ class _NaiveClient(_Client):
 
 class _CountingNoPositionClient(_NoPositionClient):
     def __init__(self):
+        super().__init__()
         self.position_calls = 0
 
     def fetch_positions(self):

@@ -114,29 +114,39 @@ class LiveRuntime:
             self.store.expire_pending_setups(close_time)
             self.setups.pop(symbol, None)
             setup = None
+        created_setup = False
         if setup is None:
             setup = _create_setup(features_1h, features_15m, close_time, self.strategy_config)
             if setup:
+                created_setup = True
                 self.setups[symbol] = setup
                 self.store.save_pending_setup(_from_setup(symbol, setup))
                 self.store.append_event("setup_created", symbol, side=setup.side, setup_trigger_time=setup.trigger_time, event_time=close_time)
-                events.append(f"{symbol} 1h setup met; waiting for first 15m RSI baseline")
+                if self.strategy_config.entry_confirmation.require_15m_rsi_reversal:
+                    events.append(f"{symbol} 1h setup met; waiting for first 15m RSI baseline")
+                else:
+                    events.append(f"{symbol} 15m RSI reversal disabled; waiting for 5m entry")
         if not setup:
             events.append(f"{symbol} waiting for 1h setup")
             return events
 
-        was_confirmed = setup.confirmed_15m
-        _confirm_setup(setup, features_15m, close_time)
-        if setup.confirmed_15m and not was_confirmed:
-            self.store.save_pending_setup(_from_setup(symbol, setup))
-            self.store.append_event("setup_confirmed_15m", symbol, side=setup.side, setup_trigger_time=setup.trigger_time, event_time=setup.confirm_15m_time)
-        if not setup.confirmed_15m:
-            if setup.rsi_15m is None:
-                events.append(f"{symbol} 1h setup met; waiting for first 15m RSI baseline")
-            else:
-                events.append(f"{symbol} baseline captured; waiting for 15m RSI reversal")
-            return events
-        events.append(f"{symbol} 15m confirmed; waiting for 5m entry")
+        if self.strategy_config.entry_confirmation.require_15m_rsi_reversal:
+            was_confirmed = setup.confirmed_15m
+            _confirm_setup(setup, features_15m, close_time)
+            if setup.confirmed_15m and not was_confirmed:
+                self.store.save_pending_setup(_from_setup(symbol, setup))
+                self.store.append_event("setup_confirmed_15m", symbol, side=setup.side, setup_trigger_time=setup.trigger_time, event_time=setup.confirm_15m_time)
+            if not setup.confirmed_15m:
+                if not created_setup:
+                    if setup.rsi_15m is None:
+                        events.append(f"{symbol} 1h setup met; waiting for first 15m RSI baseline")
+                    else:
+                        events.append(f"{symbol} baseline captured; waiting for 15m RSI reversal")
+                return events
+            events.append(f"{symbol} 15m confirmed; waiting for 5m entry")
+        else:
+            if not created_setup:
+                events.append(f"{symbol} 15m RSI reversal disabled; waiting for 5m entry")
         if not _entry_signal(setup, row_5m):
             return events
 

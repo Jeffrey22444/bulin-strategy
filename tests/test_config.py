@@ -34,6 +34,14 @@ def test_loads_trailing_strategy_config():
     assert 0 < config.trailing_stop.initial_stop_pct < 1
     assert config.rsi.method == "wilder"
     assert config.rsi.warmup_bars == 500
+    assert config.entry_confirmation.require_15m_rsi_reversal is False
+
+
+def test_trailing_entry_confirmation_defaults_to_required():
+    data = _trailing_config_data()
+    del data["entry_confirmation"]
+    config = TrailingStrategyConfig.model_validate(data)
+    assert config.entry_confirmation.require_15m_rsi_reversal is True
 
 
 def test_trailing_stop_initial_stop_pct_defaults_to_2_percent():

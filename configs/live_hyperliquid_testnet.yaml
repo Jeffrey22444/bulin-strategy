@@ -13,12 +13,15 @@ exchange:
 
 execution:
   allow_testnet_orders: true
-  margin_fraction: 0.10
+  margin_fraction: 0.11
   leverage: 3
   allow_strategy_add: false
   adopt_manual_positions: true
   manage_full_manual_added_size: true
   poll_seconds: 30
+  idle_1h_aligned_poll: true
+  idle_candle_grace_seconds: 10
+  idle_position_guard_seconds: 30
   maintain_exchange_stop: true
 
 symbols:

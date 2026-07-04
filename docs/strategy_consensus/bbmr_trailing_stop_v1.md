@@ -44,6 +44,12 @@ Never use a forming `15m` candle for RSI baseline or RSI reversal confirmation.
 
 For live use, RSI must be computed from candles fetched from the same exchange environment whose chart is being matched. Hyperliquid testnet uses Hyperliquid testnet candles; Hyperliquid mainnet uses Hyperliquid mainnet candles.
 
+## Entry Confirmation
+
+- `entry_confirmation.require_15m_rsi_reversal` controls whether the 15m RSI reversal layer is required after a 1h setup.
+- Current `configs/strategy_bbmr_trailing_stop_v1.yaml` sets it to `false`, so live entry skips the 15m baseline/reversal gate and waits directly for the completed 5m entry candle after a valid 1h setup.
+- When set to `true`, the 15m baseline/reversal rules below apply unchanged.
+
 ## Long Setup Chain
 
 1. Use the latest completed `1h` candle.
@@ -59,7 +65,7 @@ For live use, RSI must be computed from candles fetched from the same exchange e
 9. Long confirmation occurs when that later `15m RSI14` is greater than the baseline RSI.
 10. Confirmation may only use the 2nd, 3rd, or 4th completed `15m` candle in the same `1h` setup window.
 11. If the setup reaches the next `1h` window without confirmation, it expires.
-12. After confirmation, wait for a completed `5m` entry candle.
+12. If `entry_confirmation.require_15m_rsi_reversal` is `true`, after confirmation wait for a completed `5m` entry candle. If it is `false`, skip steps 5-11 and wait for the completed `5m` entry candle directly after the 1h setup.
 13. Long entry occurs when:
    - `5m close > 5m middle Bollinger band`
    - `5m close < midpoint(1h lower Bollinger band, 1h middle Bollinger band)`
@@ -79,7 +85,7 @@ For live use, RSI must be computed from candles fetched from the same exchange e
 9. Short confirmation occurs when that later `15m RSI14` is less than the baseline RSI.
 10. Confirmation may only use the 2nd, 3rd, or 4th completed `15m` candle in the same `1h` setup window.
 11. If the setup reaches the next `1h` window without confirmation, it expires.
-12. After confirmation, wait for a completed `5m` entry candle.
+12. If `entry_confirmation.require_15m_rsi_reversal` is `true`, after confirmation wait for a completed `5m` entry candle. If it is `false`, skip steps 5-11 and wait for the completed `5m` entry candle directly after the 1h setup.
 13. Short entry occurs when:
    - `5m close < 5m middle Bollinger band`
    - `5m close > midpoint(1h middle Bollinger band, 1h upper Bollinger band)`
@@ -106,9 +112,9 @@ notional = account_equity * margin_fraction * leverage
 
 Current live config:
 
-- `margin_fraction = 0.10`
+- `margin_fraction = 0.11`
 - `leverage = 3`
-- notional exposure is about `30%` of account equity.
+- notional exposure is about `45%` of account equity.
 
 This means "10%" refers to margin, not notional position size.
 
@@ -221,6 +227,7 @@ Useful state messages include:
 - `1h setup met; waiting for first 15m RSI baseline`
 - `baseline captured; waiting for 15m RSI reversal`
 - `15m RSI reversed; waiting for 5m entry`
+- `15m RSI reversal disabled; waiting for 5m entry`
 - `managed position; waiting for trailing-stop update`
 
 Keep transition messages visible:

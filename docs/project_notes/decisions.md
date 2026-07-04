@@ -22,6 +22,27 @@ Track durable project decisions here. Use concise ADRs and keep historical conte
 
 ## Decisions
 
+### ADR-004: Separate Execution Evidence From Acceptance Review (2026-07-04)
+
+**Context:**
+- Small and medium live-runner tasks were spending too many tokens repeating the same scope, test list, and project rules across Planning, Execution, and Acceptance.
+- Execution Zone needs to verify what it changed, but that does not replace independent Acceptance Zone review.
+
+**Decision:**
+- Planning Zone should provide a short Acceptance Contract alongside each Execution task card unless the user explicitly skips acceptance.
+- Execution Zone self-check is limited to evidence: changed files, scope boundaries honored, commands run, manual checks if any, skipped scope, and blockers.
+- Acceptance Zone should review against the Acceptance Contract, execution evidence, and current diff, focusing on blind spots and regression risk rather than repeating the full task prompt.
+- Full `/private/tmp` handoffs remain reserved for complex, ambiguous, failed, or architecture-affecting work.
+
+**Alternatives Considered:**
+- Keep repeating the full execution prompt to Acceptance Zone -> Rejected: wastes context and repeats stable rules.
+- Let Execution Zone serve as its own final acceptance -> Rejected: removes independent review.
+
+**Consequences:**
+- Small and medium tasks can use shorter prompts and lighter handoffs.
+- Acceptance stays independent while avoiding duplicate long checklists.
+- Future workflow prompts should separate stable context from this-turn required reading.
+
 ### ADR-003: Indicator Alignment Requires Same Exchange Candle Source (2026-07-01)
 
 **Context:**

@@ -43,6 +43,9 @@ class LiveExecutionSection(StrictModel):
     adopt_manual_positions: bool = True
     manage_full_manual_added_size: bool = True
     poll_seconds: int = Field(gt=0)
+    idle_1h_aligned_poll: bool = True
+    idle_candle_grace_seconds: int = Field(default=10, ge=0)
+    idle_position_guard_seconds: int = Field(default=30, gt=0)
     maintain_exchange_stop: bool = True
 
     @model_validator(mode="after")

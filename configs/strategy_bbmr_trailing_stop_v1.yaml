@@ -25,6 +25,9 @@ rsi:
   oversold: 30
   overbought: 70
 
+entry_confirmation:
+  require_15m_rsi_reversal: false
+
 trailing_stop:
   initial_stop_pct: 0.05
 

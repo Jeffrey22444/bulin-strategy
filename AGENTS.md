@@ -33,6 +33,13 @@ This project keeps institutional knowledge in `docs/project_notes/`.
 - When making or changing a durable decision, add or update an ADR in `docs/project_notes/decisions.md`.
 - Do not store secrets, tokens, passwords, private keys, or credential values in project notes.
 
+## Zone Defaults
+
+- Planning Zone discusses goals, constraints, risks, options, and acceptance criteria before creating execution material.
+- Execution Zone implements only clearly assigned work, uses the smallest working change, and runs relevant tests.
+- Acceptance Zone reviews only, gives pass/fail, and does not modify code.
+- Maintenance Zone handles Git, environment, dependencies, run state, and mainline cleanliness.
+
 ## Zone Operating Model
 
 The four-zone workflow is documented in `docs/project_notes/zone_operating_model.md`.

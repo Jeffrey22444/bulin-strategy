@@ -15,6 +15,62 @@ Track planning, handoffs, execution progress, blockers, and completed work here.
 
 ## Entries
 
+### 2026-07-04 - Make 15m RSI Reversal Confirmation Configurable
+- **Status**: Completed
+- **Zone**: Execution
+- **Description**: Adding a bbmr_trailing_stop_v1 YAML switch so live entry can optionally skip the 15m RSI reversal confirmation layer.
+- **Handoff**: None
+- **Notes**: Added `entry_confirmation.require_15m_rsi_reversal` to trailing strategy config with default `true`, set current YAML to `false`, and updated live runtime to skip directly to 5m entry when disabled. Updated consensus docs and verified with `.venv/bin/python -m pytest tests/test_config.py tests/live/test_trailing_runtime.py -q`.
+
+### 2026-07-04 - Improve Workflow Docs From Desktop Pet Reference
+- **Status**: Completed
+- **Zone**: Maintenance
+- **Description**: Compared `Desktop_pet` workflow docs against this project and applied minimal documentation upgrades to zone guidance.
+- **Handoff**: None
+- **Notes**: Added `Zone Defaults` to `AGENTS.md`; expanded `zone_operating_model.md` with stronger low-overhead defaults, Acceptance Contract, execution-vs-acceptance split, zone identity guidance, and reusable zone opening prompts; added ADR-004 to record the execution-evidence and acceptance-review separation.
+
+### 2026-07-04 - Brainstorm Entry Timing Tradeoffs
+- **Status**: Planned
+- **Zone**: Planning
+- **Description**: Discussing whether the current 15m RSI reversal plus 5m price confirmation is too conservative and causes late entries after a 1h setup.
+- **Handoff**: None
+- **Notes**: Explore minimal strategy variants that preserve fake-breakout protection while improving entry price. Early direction: compare current confirm-then-enter chain against simpler alternatives such as staged entry, pullback-after-confirm entry, early probe plus confirmation add/keep, or replacing one confirmation layer instead of stacking both 15m RSI and 5m price confirmation.
+
+### 2026-07-04 - Plan Stop Order Slippage Control
+- **Status**: Planned
+- **Zone**: Planning
+- **Description**: Discussing whether live trailing stops should use limit-style protection after observed breakeven stop fills more than 1% away from stop price.
+- **Handoff**: None
+- **Notes**: Current Hyperliquid client creates reduce-only stop-market orders via `create_reduce_only_stop()`. Recommendation is not to blindly replace protective stops with passive limit orders, because limit stops can fail to fill. First planning direction: inspect actual fill/order records, then consider configurable stop execution modes such as `market` default and optional aggressive stop-limit with slippage band plus fallback/alert behavior.
+
+### 2026-07-03 - Inspect Live Runtime Log And SQLite Growth
+- **Status**: Completed
+- **Zone**: Maintenance
+- **Description**: Checked whether the overnight live trading run accumulated excessive logs or SQLite data.
+- **Handoff**: None
+- **Notes**: `data/live/hyperliquid_testnet.sqlite3` was only `36K` with `37` total `live_trade_events`, `0` open trades, and `0` pending setups. `23` events were created in the last 12 hours, which is consistent with state-change journaling rather than per-poll logging. No SQLite `-wal` or `-shm` growth files were present. The only `.log` file found was the older soak-test artifact `data/live/soak/20260701T200829/live.log` at `30K`; current live runner output is terminal-only and the SQLite journal stores only state transitions.
+
+### 2026-07-02 - Generate Reusable Workflow Architecture Handoff
+- **Status**: Completed
+- **Zone**: Planning
+- **Description**: Created a generic handoff for bootstrapping the same multi-zone workflow and Project Memory system in a new unrelated project.
+- **Handoff**: `/private/tmp/desktop_pet_project_workflow_architecture_handoff_20260702.md`
+- **Notes**: Handoff intentionally excludes trading-system business content and keeps only reusable workflow architecture, zone responsibilities, cross-zone interaction rules, Project Memory setup, and desktop-pet-specific product-consensus suggestions.
+
+### 2026-07-02 - Plan Idle-Aware Live Poll Scheduler
+- **Status**: Planned
+- **Zone**: Planning
+- **Description**: Reviewing `/Users/jeffrey/Downloads/bbmr_idle_scheduler_b_plan_task.md` for reducing full live polls while idle.
+- **Handoff**: None
+- **Notes**: User clarified the outer loop should still wake on a 30s cadence; only the work done per tick changes. Idle ticks should run lightweight position/open-order guards only, while full OHLCV strategy polls are due at startup, when active state exists, or at the next 1h close plus grace. This change must be implemented on a new branch, not directly on the current branch/main. Acceptance must focus on full-poll-vs-light-guard state transitions, not on literally sleeping for one hour. Do not change strategy rules, safety gates, persistence schema, or introduce external scheduler dependencies.
+
+### 2026-07-02 - Implement Idle-Aware Live Poll Scheduler
+- **Status**: Completed
+- **Zone**: Execution
+- **Description**: Adding idle/full tick scheduling to the Hyperliquid live runner so idle state uses light guards and aligns full strategy polls to 1h candle close plus grace.
+- **Handoff**: `/Users/jeffrey/Downloads/bbmr_idle_scheduler_b_plan_task.md`
+- **Notes**: Implemented on branch `codex/idle-aware-live-poll-scheduler`. User approved carrying the existing local `configs/live_hyperliquid_testnet.yaml` margin change into this branch. Added idle scheduler config fields, startup full poll, idle light guard without OHLCV, 1h+grace full-poll alignment, active-state 30s full polling, and recoverable network handling for light guard. Verified with `.venv/bin/python -m pytest tests/live/test_live_config.py tests/live/test_live_run.py tests/live/test_trailing_runtime.py -q` and `.venv/bin/python -m pytest tests/live -q`.
+
 ### 2026-07-02 - Acceptance Intake For Live Runner Network Error Fix
 - **Status**: In Progress
 - **Zone**: Acceptance

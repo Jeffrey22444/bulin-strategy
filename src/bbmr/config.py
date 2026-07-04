@@ -141,6 +141,10 @@ class EntryConfirmationSection(StrictModel):
     reentry_bars: int = Field(gt=0)
 
 
+class TrailingEntryConfirmationSection(StrictModel):
+    require_15m_rsi_reversal: bool = True
+
+
 class ProfitTargetSection(StrictModel):
     tp_mid_frac: float = Field(ge=0, le=1)
     min_profit_r_after_add: float = Field(ge=0)
@@ -229,6 +233,7 @@ class TrailingStrategyConfig(StrictModel):
     timeframes: TimeframesSection
     bollinger: TrailingBollingerSection
     rsi: RsiSection
+    entry_confirmation: TrailingEntryConfirmationSection = Field(default_factory=TrailingEntryConfirmationSection)
     trailing_stop: TrailingStopSection = Field(default_factory=TrailingStopSection)
     costs: CostsSection
     safety: SafetySection

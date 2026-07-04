@@ -19,6 +19,9 @@ def test_live_config_loads_trailing_strategy():
     config = load_live_config(CONFIG_PATH)
     assert config.strategy_config == "configs/strategy_bbmr_trailing_stop_v1.yaml"
     assert config.exchange.env == "testnet"
+    assert config.execution.idle_1h_aligned_poll is True
+    assert config.execution.idle_candle_grace_seconds == 10
+    assert config.execution.idle_position_guard_seconds == 30
 
 
 def test_old_strategy_config_is_rejected():
@@ -63,4 +66,23 @@ def test_strategy_add_is_rejected():
     data = _data()
     data["execution"]["allow_strategy_add"] = True
     with pytest.raises(ValidationError, match="strategy add"):
+        LiveConfig.model_validate(data)
+
+
+def test_idle_scheduler_fields_are_validated():
+    data = _data()
+    data["execution"]["idle_candle_grace_seconds"] = -1
+    with pytest.raises(ValidationError):
+        LiveConfig.model_validate(data)
+
+    data = _data()
+    data["execution"]["idle_position_guard_seconds"] = 0
+    with pytest.raises(ValidationError):
+        LiveConfig.model_validate(data)
+
+
+def test_unknown_live_execution_field_is_rejected():
+    data = _data()
+    data["execution"]["unexpected"] = True
+    with pytest.raises(ValidationError):
         LiveConfig.model_validate(data)

@@ -161,7 +161,7 @@ def _future_long_features(close_5m=99, close_time="2030-01-01 09:35"):
 
 def test_entry_sizing_uses_margin_fraction_times_leverage(tmp_path):
     runtime, _ = _runtime(tmp_path)
-    assert runtime.entry_notional(10000) == 3000
+    assert runtime.entry_notional(10000) == 10000 * runtime.live_config.execution.margin_fraction * runtime.live_config.execution.leverage
 
 
 def test_testnet_orders_require_config_and_cli(tmp_path):
@@ -207,7 +207,29 @@ def test_latest_completed_features_uses_rsi_warmup_bars(tmp_path):
 def test_live_strategy_ignores_old_v3_2_filter_columns(tmp_path):
     runtime, exchange = _runtime(tmp_path)
     events = runtime.maybe_open_strategy_trade("BTC", *_long_features_with_old_filter_columns(), 10000, True)
-    assert exchange.entries == [("BTC", "long", 28.57142857)]
+    expected_qty = runtime.entry_notional(10000) / 105
+    assert exchange.entries == [("BTC", "long", round(expected_qty, 8))]
+    assert any("entry opened" in event for event in events)
+
+
+def test_requires_15m_reversal_when_enabled(tmp_path):
+    runtime = _runtime_with_exchange(tmp_path, ClockedExchange("2030-01-01 09:05Z"))
+    runtime.strategy_config.entry_confirmation.require_15m_rsi_reversal = True
+
+    events = runtime.maybe_open_strategy_trade("BTC", *_future_long_features(close_5m=105, close_time="2030-01-01 09:05"), 10000, False)
+
+    assert runtime.store.open_trade(runtime.position_key("BTC", "long")) is None
+    assert events == ["BTC 1h setup met; waiting for first 15m RSI baseline"]
+
+
+def test_skips_15m_reversal_when_disabled(tmp_path):
+    runtime = _runtime_with_exchange(tmp_path, ClockedExchange("2030-01-01 09:05Z"))
+
+    events = runtime.maybe_open_strategy_trade("BTC", *_future_long_features(close_5m=105, close_time="2030-01-01 09:05"), 10000, False)
+
+    assert runtime.store.open_trade(runtime.position_key("BTC", "long")) is not None
+    assert events[0] == "BTC 15m RSI reversal disabled; waiting for 5m entry"
+    assert "BTC 15m RSI reversal disabled; waiting for 5m entry" in events
     assert any("entry opened" in event for event in events)
 
 
@@ -225,6 +247,7 @@ def test_pending_setup_recovers_after_restart(tmp_path, monkeypatch):
 
 def test_confirmed_setup_state_recovers_after_restart(tmp_path, monkeypatch):
     runtime = _runtime_with_exchange(tmp_path, ClockedExchange("2030-01-01 09:35Z"))
+    runtime.strategy_config.entry_confirmation.require_15m_rsi_reversal = True
     runtime.maybe_open_strategy_trade("BTC", *_future_long_features(close_5m=99), 10000, False)
     monkeypatch.setattr("bbmr.live.trailing_runtime.latest_completed_features", lambda exchange, symbol, config: _future_long_features(close_5m=99))
 
@@ -272,6 +295,7 @@ def test_entry_opened_clears_pending_setup(tmp_path):
 
 def test_forming_5m_does_not_trigger_entry(tmp_path):
     runtime = _runtime_with_exchange(tmp_path, ClockedExchange("2030-01-01 09:32Z"))
+    runtime.strategy_config.entry_confirmation.require_15m_rsi_reversal = True
     runtime.setups["BTC"] = _confirmed_setup()
     one_h, fifteen_m, _ = _future_long_features()
     five_m = _frame(
