@@ -28,3 +28,15 @@ def test_store_supports_pnl_source_markers(tmp_path):
         for row in store.connection.execute("SELECT pnl_source FROM live_trades WHERE status = 'closed'").fetchall()
     }
     assert sources == {"exchange", "estimated_local", "unknown"}
+
+
+def test_store_persists_trailing_stage(tmp_path):
+    store = LiveStateStore(str(tmp_path / "live.sqlite3"))
+    trade = store.create_trade("acct:testnet:BTC:long", "BTC", "long", 1, 100, "strategy", 95)
+    trade.trailing_stage = 3
+    store.update_trade(trade)
+
+    reopened = LiveStateStore(str(tmp_path / "live.sqlite3"))
+    loaded = reopened.open_trade("acct:testnet:BTC:long")
+
+    assert loaded.trailing_stage == 3

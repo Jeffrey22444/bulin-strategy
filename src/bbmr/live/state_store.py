@@ -29,6 +29,7 @@ class LiveTrade:
     setup_trigger_time: pd.Timestamp | None = None
     setup_rsi_15m: float | None = None
     confirm_15m_time: pd.Timestamp | None = None
+    trailing_stage: int = 0
 
 
 @dataclass
@@ -150,8 +151,8 @@ class LiveStateStore:
             """
             INSERT INTO live_trades
             (internal_trade_id, exchange_position_key, symbol, side, qty, entry_price, source, status, initial_stop_loss, current_stop_loss, system_stop_order_id,
-             entry_time, pnl_source, setup_trigger_time, setup_rsi_15m, confirm_15m_time)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             entry_time, pnl_source, setup_trigger_time, setup_rsi_15m, confirm_15m_time, trailing_stage)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 trade.internal_trade_id,
@@ -170,6 +171,7 @@ class LiveStateStore:
                 _iso(trade.setup_trigger_time),
                 trade.setup_rsi_15m,
                 _iso(trade.confirm_15m_time),
+                trade.trailing_stage,
             ),
         )
         self.connection.commit()
@@ -186,10 +188,10 @@ class LiveStateStore:
         self.connection.execute(
             """
             UPDATE live_trades
-            SET qty = ?, entry_price = ?, initial_stop_loss = ?, current_stop_loss = ?, system_stop_order_id = ?, pnl_source = ?
+            SET qty = ?, entry_price = ?, initial_stop_loss = ?, current_stop_loss = ?, system_stop_order_id = ?, pnl_source = ?, trailing_stage = ?
             WHERE internal_trade_id = ?
             """,
-            (trade.qty, trade.entry_price, trade.initial_stop_loss, trade.current_stop_loss, trade.system_stop_order_id, trade.pnl_source, trade.internal_trade_id),
+            (trade.qty, trade.entry_price, trade.initial_stop_loss, trade.current_stop_loss, trade.system_stop_order_id, trade.pnl_source, trade.trailing_stage, trade.internal_trade_id),
         )
         self.connection.commit()
 
@@ -306,6 +308,7 @@ class LiveStateStore:
             "setup_trigger_time": "TEXT",
             "setup_rsi_15m": "REAL",
             "confirm_15m_time": "TEXT",
+            "trailing_stage": "INTEGER NOT NULL DEFAULT 0",
         }.items():
             if name not in columns:
                 self.connection.execute(f"ALTER TABLE live_trades ADD COLUMN {name} {definition}")
@@ -333,6 +336,7 @@ def _trade(row: sqlite3.Row) -> LiveTrade:
         _timestamp(row["setup_trigger_time"]),
         None if row["setup_rsi_15m"] is None else float(row["setup_rsi_15m"]),
         _timestamp(row["confirm_15m_time"]),
+        int(row["trailing_stage"]),
     )
 
 

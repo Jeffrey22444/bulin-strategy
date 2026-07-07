@@ -22,14 +22,15 @@ rsi:
   period: 14
   method: "wilder"
   warmup_bars: 500
-  oversold: 30
-  overbought: 70
+  oversold: 31
+  overbought: 69
 
 entry_confirmation:
   require_15m_rsi_reversal: false
 
 trailing_stop:
   initial_stop_pct: 0.05
+  first_step_risk_reduction: 0.5
 
 costs:
   taker_fee_bps: 0.0

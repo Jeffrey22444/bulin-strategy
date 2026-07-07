@@ -39,8 +39,8 @@ Never use a forming `15m` candle for RSI baseline or RSI reversal confirmation.
   - period: `14`
   - method: `wilder`
   - warmup/history bars: `500`
-  - oversold: `30`
-  - overbought: `70`
+  - oversold: `31`
+  - overbought: `69`
 
 For live use, RSI must be computed from candles fetched from the same exchange environment whose chart is being matched. Hyperliquid testnet uses Hyperliquid testnet candles; Hyperliquid mainnet uses Hyperliquid mainnet candles.
 
@@ -97,6 +97,7 @@ Initial stop percent is configured by:
 ```yaml
 trailing_stop:
   initial_stop_pct: 0.05
+  first_step_risk_reduction: 0.5
 ```
 
 - Long initial stop: `entry_price * (1 - initial_stop_pct)`
@@ -130,12 +131,14 @@ For an open long, evaluate completed `5m` candle data against the current `1h` B
 
 Candidate stop updates:
 
-1. If `5m close > midpoint(1h lower, 1h middle)`, candidate stop is `entry_price`.
-2. If `5m close > 1h middle`, candidate stop is `midpoint(entry_price, 1h middle)`.
-3. If `5m high >= midpoint(1h middle, 1h upper)`, candidate stop is `1h middle`.
+1. If `5m close > midpoint(1h lower, 1h middle)`, candidate stop reduces initial risk by `first_step_risk_reduction`: `initial_stop_loss + (entry_price - initial_stop_loss) * first_step_risk_reduction`.
+2. If `5m close > 1h middle`, candidate stop is `entry_price`.
+3. If `5m high >= midpoint(1h middle, 1h upper)`, persist `trailing_stage = 3` and enter midband-follow mode.
+   - In midband-follow mode, candidate stop follows the latest completed `1h middle`: `max(1h middle, entry_price)`.
+   - This may relax the stop versus the prior hour's middle band, but never below entry price.
 4. If `5m high > 1h upper`, candidate stop is `5m close`.
 
-Only move the stop upward. If multiple candidates apply, use the highest valid stop.
+Before midband-follow mode, only move the stop upward. In midband-follow mode, allow the middle-band stop to relax no lower than entry price. If multiple candidates apply, use the highest candidate stop.
 
 ## Short Trailing Stop Chain
 
@@ -143,12 +146,14 @@ For an open short, evaluate completed `5m` candle data against the current `1h` 
 
 Candidate stop updates:
 
-1. If `5m close < midpoint(1h upper, 1h middle)`, candidate stop is `entry_price`.
-2. If `5m close < 1h middle`, candidate stop is `midpoint(entry_price, 1h middle)`.
-3. If `5m low <= midpoint(1h lower, 1h middle)`, candidate stop is `1h middle`.
+1. If `5m close < midpoint(1h upper, 1h middle)`, candidate stop reduces initial risk by `first_step_risk_reduction`: `initial_stop_loss - (initial_stop_loss - entry_price) * first_step_risk_reduction`.
+2. If `5m close < 1h middle`, candidate stop is `entry_price`.
+3. If `5m low <= midpoint(1h lower, 1h middle)`, persist `trailing_stage = 3` and enter midband-follow mode.
+   - In midband-follow mode, candidate stop follows the latest completed `1h middle`: `min(1h middle, entry_price)`.
+   - This may relax the stop versus the prior hour's middle band, but never above entry price.
 4. If `5m low < 1h lower`, candidate stop is `5m close`.
 
-Only move the stop downward. If multiple candidates apply, use the lowest valid stop.
+Before midband-follow mode, only move the stop downward. In midband-follow mode, allow the middle-band stop to relax no higher than entry price. If multiple candidates apply, use the lowest candidate stop.
 
 ## Manual Position Handling
 
@@ -183,6 +188,7 @@ The live runner persists state in SQLite.
 Required persistent state:
 
 - open managed trades
+- trailing stage for open managed trades
 - pending setup state
 - 15m RSI baseline
 - 15m confirmation state

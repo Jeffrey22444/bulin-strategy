@@ -91,6 +91,7 @@ class StopLossSection(StrictModel):
 
 class TrailingStopSection(StrictModel):
     initial_stop_pct: float = Field(0.02, gt=0, lt=1)
+    first_step_risk_reduction: float = Field(1.0, ge=0, le=1)
 
 
 class BandwidthStateSection(StrictModel):

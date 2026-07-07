@@ -15,6 +15,41 @@ Track planning, handoffs, execution progress, blockers, and completed work here.
 
 ## Entries
 
+### 2026-07-07 - Plan Coarser Midband Follow Stop Refresh
+- **Status**: Planned
+- **Zone**: Planning
+- **Description**: Reviewing whether midband-follow trailing stops should stop refreshing every 30 seconds and instead update on a coarser cadence.
+- **Handoff**: None
+- **Notes**: Current runtime path calls `update_stop()` from the 30s poll loop and passes `features[0].iloc[-1]` as the 1h row, which can cause repeated midband-follow stop refreshes within the same 1h window. Planning direction: prefer freezing the midband-follow stop within the current 1h bucket and only refreshing from the next completed/opened 1h bucket, instead of arbitrary 10m/20m/30m intra-hour refreshes that depend on forming 1h values.
+
+### 2026-07-06 - Implement Dynamic Midband Follow Trailing Stop
+- **Status**: Completed
+- **Zone**: Execution
+- **Description**: Updating `bbmr_trailing_stop_v1` trailing stop chain so step 2 moves to entry and step 3 persists a midband-follow state.
+- **Handoff**: None
+- **Notes**: Added `trailing_stage` persistence on open trades, changed step 2 to entry price, and made step 3 activate persisted midband-follow using the latest completed 1h middle with entry-price floor/ceiling. Verified with `.venv/bin/python -m pytest tests/live/test_trailing_runtime.py tests/live/test_state_store.py -q`.
+
+### 2026-07-06 - Plan Dynamic Midband Follow Trailing Stop
+- **Status**: Planned
+- **Zone**: Planning
+- **Description**: Planning a revised trailing-stop chain where the second step moves to breakeven and the third step activates dynamic following of the latest completed 1h middle band.
+- **Handoff**: None
+- **Notes**: User-approved behavior: keep first and fourth trailing triggers as-is; second trigger keeps `5m close > 1h middle` but candidate stop becomes entry price; third trigger keeps `5m high >= midpoint(1h middle, 1h upper)` for long / symmetric short trigger, then activates a persistent midband-follow mode. In midband-follow mode long stop follows `max(latest completed 1h middle, entry_price)`, short follows `min(latest completed 1h middle, entry_price)`, allowing midband stop relaxation while preventing a return to loss after stage 3. This requires minimal persistent stage/state, not just a stateless candidate calculation.
+
+### 2026-07-06 - Inspect SOL Repeated Stop Updates
+- **Status**: Completed
+- **Zone**: Maintenance
+- **Description**: Reviewed recent SOL trade events after repeated upward stop moves were observed during the same evening session.
+- **Handoff**: None
+- **Notes**: Local SQLite shows one SOL long trade opened at `2026-07-05T03:45:00+00:00` with stop updates at `08:45:18`, `12:30:04`, `12:30:40`, `12:31:16`, and `12:31:53` UTC before exit at `13:00:39` UTC. The configured `first_step_risk_reduction` only changes the first trailing candidate, but the final stored stop (`80.389775`) exceeded entry (`80.1398`), so later updates were not just the softened first step. Strongest code-level suspicion is repeated recalculation against `features[0].iloc[-1]` in `src/bbmr/live/run.py` while using the latest completed 5m row, which could allow stop moves every ~30s if the fetched 1h frame's last row is the still-forming candle.
+
+### 2026-07-05 - Soften First Trailing Stop Step
+- **Status**: Completed
+- **Zone**: Execution
+- **Description**: Add a configurable first-step risk reduction for `bbmr_trailing_stop_v1` so the first trailing stop move can reduce initial risk instead of always moving to entry.
+- **Handoff**: None
+- **Notes**: Added `trailing_stop.first_step_risk_reduction` with default `1.0`, set current trailing strategy YAML to `0.5`, and changed only the first trailing-stop candidate to reduce initial risk by that ratio. Verified with `.venv/bin/python -m pytest tests/test_config.py tests/live/test_trailing_runtime.py -q`.
+
 ### 2026-07-04 - Make 15m RSI Reversal Confirmation Configurable
 - **Status**: Completed
 - **Zone**: Execution

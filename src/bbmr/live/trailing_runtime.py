@@ -186,14 +186,18 @@ class LiveRuntime:
         return events
 
     def update_stop(self, trade: LiveTrade, row_1h: pd.Series, row_5m: pd.Series, allow_orders: bool, dry_run: bool = False) -> str | None:
-        new_stop, reason = live_updated_stop(trade, row_1h, row_5m)
-        if new_stop == trade.current_stop_loss:
+        old_stage = trade.trailing_stage
+        new_stop, reason = live_updated_stop(trade, row_1h, row_5m, self.strategy_config.trailing_stop.first_step_risk_reduction)
+        if new_stop == trade.current_stop_loss and trade.trailing_stage == old_stage:
             return None
         old_stop = trade.current_stop_loss
-        trade.current_stop_loss = new_stop
-        self._replace_stop(trade, allow_orders, dry_run)
+        if new_stop != trade.current_stop_loss:
+            trade.current_stop_loss = new_stop
+            self._replace_stop(trade, allow_orders, dry_run)
         self.store.update_trade(trade)
         self.store.append_event("stop_updated", trade.symbol, trade=trade, event_time=self._now())
+        if new_stop == old_stop:
+            return f"{trade.symbol} {reason}; trailing stage {old_stage} -> {trade.trailing_stage}"
         return f"{trade.symbol} {reason}; stop moved {old_stop} -> {new_stop}"
 
     def entry_notional(self, equity: float) -> float:
@@ -334,7 +338,7 @@ class LiveRuntime:
         print(f"{pending_setup.symbol} pending setup discarded on restart: {reason}")
 
 
-def live_updated_stop(trade: LiveTrade, row_1h: pd.Series, row_5m: pd.Series) -> tuple[float, str]:
+def live_updated_stop(trade: LiveTrade, row_1h: pd.Series, row_5m: pd.Series, first_step_risk_reduction: float = 1.0) -> tuple[float, str]:
     lb_1h = float(row_1h["lb"])
     mid_1h = float(row_1h["mb"])
     ub_1h = float(row_1h["ub"])
@@ -343,25 +347,45 @@ def live_updated_stop(trade: LiveTrade, row_1h: pd.Series, row_5m: pd.Series) ->
     low_5m = float(row_5m["low"])
     candidates: list[tuple[float, str]] = []
     if trade.side == "long":
-        if close_5m > _midpoint(lb_1h, mid_1h):
-            candidates.append((trade.entry_price, "5m close > midpoint(1h lower, 1h middle)"))
-        if close_5m > mid_1h:
-            candidates.append((_midpoint(trade.entry_price, mid_1h), "5m close > 1h middle"))
+        midband_follow = trade.trailing_stage >= 3
+        stage_activated = False
+        if not midband_follow and close_5m > _midpoint(lb_1h, mid_1h):
+            first_step_stop = trade.initial_stop_loss + (trade.entry_price - trade.initial_stop_loss) * first_step_risk_reduction
+            candidates.append((first_step_stop, "5m close > midpoint(1h lower, 1h middle); first-step risk reduced"))
+        if not midband_follow and close_5m > mid_1h:
+            candidates.append((trade.entry_price, "5m close > 1h middle"))
         if high_5m >= _midpoint(mid_1h, ub_1h):
-            candidates.append((mid_1h, "5m high >= midpoint(1h middle, 1h upper)"))
+            trade.trailing_stage = max(trade.trailing_stage, 3)
+            midband_follow = True
+            stage_activated = True
+        if midband_follow:
+            reason = "5m high >= midpoint(1h middle, 1h upper); midband-follow activated" if stage_activated else "midband-follow active; following latest completed 1h middle"
+            candidates.append((max(mid_1h, trade.entry_price), reason))
         if high_5m > ub_1h:
             candidates.append((close_5m, "5m high > 1h upper"))
+        if midband_follow:
+            return max(candidates, default=(trade.current_stop_loss, "no stop change"))
         valid = [(stop, reason) for stop, reason in candidates if stop > trade.current_stop_loss]
         return max(valid, default=(trade.current_stop_loss, "no stop change"))
 
-    if close_5m < _midpoint(ub_1h, mid_1h):
-        candidates.append((trade.entry_price, "5m close < midpoint(1h upper, 1h middle)"))
-    if close_5m < mid_1h:
-        candidates.append((_midpoint(trade.entry_price, mid_1h), "5m close < 1h middle"))
+    midband_follow = trade.trailing_stage >= 3
+    stage_activated = False
+    if not midband_follow and close_5m < _midpoint(ub_1h, mid_1h):
+        first_step_stop = trade.initial_stop_loss - (trade.initial_stop_loss - trade.entry_price) * first_step_risk_reduction
+        candidates.append((first_step_stop, "5m close < midpoint(1h upper, 1h middle); first-step risk reduced"))
+    if not midband_follow and close_5m < mid_1h:
+        candidates.append((trade.entry_price, "5m close < 1h middle"))
     if low_5m <= _midpoint(lb_1h, mid_1h):
-        candidates.append((mid_1h, "5m low <= midpoint(1h lower, 1h middle)"))
+        trade.trailing_stage = max(trade.trailing_stage, 3)
+        midband_follow = True
+        stage_activated = True
+    if midband_follow:
+        reason = "5m low <= midpoint(1h lower, 1h middle); midband-follow activated" if stage_activated else "midband-follow active; following latest completed 1h middle"
+        candidates.append((min(mid_1h, trade.entry_price), reason))
     if low_5m < lb_1h:
         candidates.append((close_5m, "5m low < 1h lower"))
+    if midband_follow:
+        return min(candidates, default=(trade.current_stop_loss, "no stop change"))
     valid = [(stop, reason) for stop, reason in candidates if stop < trade.current_stop_loss]
     return min(valid, default=(trade.current_stop_loss, "no stop change"))
 

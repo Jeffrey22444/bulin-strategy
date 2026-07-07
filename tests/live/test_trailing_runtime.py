@@ -447,6 +447,7 @@ def test_long_high_based_stop_rules():
     stop, reason = live_updated_stop(trade, row_1h, pd.Series({"close": 130, "high": 140, "low": 125}))
     assert stop == 120
     assert "5m high >=" in reason
+    assert trade.trailing_stage == 3
     trade.current_stop_loss = 120
     stop, reason = live_updated_stop(trade, row_1h, pd.Series({"close": 150, "high": 161, "low": 145}))
     assert stop == 150
@@ -459,10 +460,100 @@ def test_short_low_based_stop_rules():
     stop, reason = live_updated_stop(trade, row_1h, pd.Series({"close": 70, "high": 75, "low": 60}))
     assert stop == 80
     assert "5m low <=" in reason
+    assert trade.trailing_stage == 3
     trade.current_stop_loss = 80
     stop, reason = live_updated_stop(trade, row_1h, pd.Series({"close": 50, "high": 55, "low": 39}))
     assert stop == 50
     assert "5m low <" in reason
+
+
+def test_second_trailing_step_moves_to_entry_price():
+    trade = _trade("long", 100, 95)
+    trade.current_stop_loss = 97.5
+    stop, reason = live_updated_stop(trade, pd.Series({"lb": 80, "mb": 120, "ub": 160}), pd.Series({"close": 125, "high": 130, "low": 124}), 0.5)
+    assert stop == 100
+    assert reason == "5m close > 1h middle"
+
+    trade = _trade("short", 100, 105)
+    trade.current_stop_loss = 102.5
+    stop, reason = live_updated_stop(trade, pd.Series({"lb": 40, "mb": 80, "ub": 120}), pd.Series({"close": 75, "high": 76, "low": 70}), 0.5)
+    assert stop == 100
+    assert reason == "5m close < 1h middle"
+
+
+def test_third_trailing_step_persists_midband_follow_state(tmp_path):
+    runtime, _ = _runtime(tmp_path)
+    trade = runtime.store.create_trade(runtime.position_key("BTC", "long"), "BTC", "long", 1, 100, "strategy", 95)
+
+    runtime.update_stop(trade, pd.Series({"lb": 80, "mb": 120, "ub": 160}), pd.Series({"close": 130, "high": 140, "low": 125}), False)
+
+    loaded = runtime.store.open_trade(runtime.position_key("BTC", "long"))
+    assert loaded.trailing_stage == 3
+    assert loaded.current_stop_loss == 120
+
+
+def test_midband_follow_long_can_relax_but_not_below_entry():
+    trade = _trade("long", 100, 95)
+    trade.current_stop_loss = 105
+    trade.trailing_stage = 3
+
+    stop, reason = live_updated_stop(trade, pd.Series({"lb": 80, "mb": 103, "ub": 160}), pd.Series({"close": 104, "high": 104, "low": 102}))
+    assert stop == 103
+    assert "midband-follow active" in reason
+
+    stop, _ = live_updated_stop(trade, pd.Series({"lb": 80, "mb": 99, "ub": 160}), pd.Series({"close": 100, "high": 100, "low": 98}))
+    assert stop == 100
+
+
+def test_midband_follow_short_can_relax_but_not_above_entry():
+    trade = _trade("short", 100, 105)
+    trade.current_stop_loss = 95
+    trade.trailing_stage = 3
+
+    stop, reason = live_updated_stop(trade, pd.Series({"lb": 40, "mb": 97, "ub": 120}), pd.Series({"close": 96, "high": 98, "low": 96}))
+    assert stop == 97
+    assert "midband-follow active" in reason
+
+    stop, _ = live_updated_stop(trade, pd.Series({"lb": 40, "mb": 101, "ub": 120}), pd.Series({"close": 100, "high": 102, "low": 100}))
+    assert stop == 100
+
+
+def test_fourth_trailing_step_still_overrides_midband_follow():
+    trade = _trade("long", 100, 95)
+    trade.current_stop_loss = 105
+    trade.trailing_stage = 3
+    stop, reason = live_updated_stop(trade, pd.Series({"lb": 80, "mb": 103, "ub": 160}), pd.Series({"close": 150, "high": 161, "low": 145}))
+    assert stop == 150
+    assert "5m high >" in reason
+
+    trade = _trade("short", 100, 105)
+    trade.current_stop_loss = 95
+    trade.trailing_stage = 3
+    stop, reason = live_updated_stop(trade, pd.Series({"lb": 40, "mb": 97, "ub": 120}), pd.Series({"close": 50, "high": 55, "low": 39}))
+    assert stop == 50
+    assert "5m low <" in reason
+
+
+def test_first_trailing_step_full_reduction_matches_old_behavior():
+    row_1h = pd.Series({"lb": 80, "mb": 120, "ub": 160})
+    stop, _ = live_updated_stop(_trade("long", 100, 95), row_1h, pd.Series({"close": 101, "high": 102, "low": 100}), 1.0)
+    assert stop == 100
+
+    row_1h = pd.Series({"lb": 40, "mb": 80, "ub": 120})
+    stop, _ = live_updated_stop(_trade("short", 100, 105), row_1h, pd.Series({"close": 99, "high": 100, "low": 98}), 1.0)
+    assert stop == 100
+
+
+def test_first_trailing_step_half_reduces_initial_risk():
+    row_1h = pd.Series({"lb": 80, "mb": 120, "ub": 160})
+    stop, reason = live_updated_stop(_trade("long", 100, 95), row_1h, pd.Series({"close": 101, "high": 102, "low": 100}), 0.5)
+    assert stop == 97.5
+    assert "first-step risk reduced" in reason
+
+    row_1h = pd.Series({"lb": 40, "mb": 80, "ub": 120})
+    stop, reason = live_updated_stop(_trade("short", 100, 105), row_1h, pd.Series({"close": 99, "high": 100, "low": 98}), 0.5)
+    assert stop == 102.5
+    assert "first-step risk reduced" in reason
 
 
 def _trade(side, entry, stop):

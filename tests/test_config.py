@@ -35,6 +35,7 @@ def test_loads_trailing_strategy_config():
     assert config.rsi.method == "wilder"
     assert config.rsi.warmup_bars == 500
     assert config.entry_confirmation.require_15m_rsi_reversal is False
+    assert config.trailing_stop.first_step_risk_reduction == 0.5
 
 
 def test_trailing_entry_confirmation_defaults_to_required():
@@ -49,12 +50,21 @@ def test_trailing_stop_initial_stop_pct_defaults_to_2_percent():
     del data["trailing_stop"]
     config = TrailingStrategyConfig.model_validate(data)
     assert config.trailing_stop.initial_stop_pct == 0.02
+    assert config.trailing_stop.first_step_risk_reduction == 1.0
 
 
 @pytest.mark.parametrize("initial_stop_pct", [0, -0.01, 1, 1.01])
 def test_trailing_stop_initial_stop_pct_must_be_between_0_and_1(initial_stop_pct):
     data = _trailing_config_data()
     data["trailing_stop"]["initial_stop_pct"] = initial_stop_pct
+    with pytest.raises(ValidationError):
+        TrailingStrategyConfig.model_validate(data)
+
+
+@pytest.mark.parametrize("first_step_risk_reduction", [-0.01, 1.01])
+def test_trailing_stop_first_step_risk_reduction_must_be_between_0_and_1(first_step_risk_reduction):
+    data = _trailing_config_data()
+    data["trailing_stop"]["first_step_risk_reduction"] = first_step_risk_reduction
     with pytest.raises(ValidationError):
         TrailingStrategyConfig.model_validate(data)
 
