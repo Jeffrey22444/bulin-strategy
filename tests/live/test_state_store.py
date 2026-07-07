@@ -1,3 +1,5 @@
+import pandas as pd
+
 from bbmr.live.state_store import LiveStateStore
 
 
@@ -40,3 +42,16 @@ def test_store_persists_trailing_stage(tmp_path):
     loaded = reopened.open_trade("acct:testnet:BTC:long")
 
     assert loaded.trailing_stage == 3
+
+
+def test_store_persists_midband_follow_bucket_start(tmp_path):
+    store = LiveStateStore(str(tmp_path / "live.sqlite3"))
+    trade = store.create_trade("acct:testnet:BTC:long", "BTC", "long", 1, 100, "strategy", 95)
+    trade.trailing_stage = 3
+    trade.midband_follow_bucket_start = pd.Timestamp("2030-01-01 08:00Z")
+    store.update_trade(trade)
+
+    loaded = LiveStateStore(str(tmp_path / "live.sqlite3")).open_trade("acct:testnet:BTC:long")
+
+    assert loaded.trailing_stage == 3
+    assert loaded.midband_follow_bucket_start == pd.Timestamp("2030-01-01 08:00Z")

@@ -15,6 +15,13 @@ Track planning, handoffs, execution progress, blockers, and completed work here.
 
 ## Entries
 
+### 2026-07-07 - Implement Hourly Midband Follow Refresh
+- **Status**: Completed
+- **Zone**: Execution
+- **Description**: Limit `trailing_stage >= 3` midband-follow stop refreshes to once per 1h bucket.
+- **Handoff**: None
+- **Notes**: Added `midband_follow_bucket_start` persistence for open trades and limited stage-3 midband-follow refresh to activation plus the first relevant poll in each new 1h bucket. Same-bucket 30s polls no longer refresh the midband stop, while stage 4 still works. Verified with `.venv/bin/python -m pytest tests/live/test_trailing_runtime.py tests/live/test_state_store.py -q`.
+
 ### 2026-07-07 - Plan Coarser Midband Follow Stop Refresh
 - **Status**: Planned
 - **Zone**: Planning

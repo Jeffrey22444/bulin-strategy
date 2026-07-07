@@ -485,11 +485,12 @@ def test_third_trailing_step_persists_midband_follow_state(tmp_path):
     runtime, _ = _runtime(tmp_path)
     trade = runtime.store.create_trade(runtime.position_key("BTC", "long"), "BTC", "long", 1, 100, "strategy", 95)
 
-    runtime.update_stop(trade, pd.Series({"lb": 80, "mb": 120, "ub": 160}), pd.Series({"close": 130, "high": 140, "low": 125}), False)
+    runtime.update_stop(trade, _row_1h("2030-01-01 08:00Z", lb=80, mb=120, ub=160), pd.Series({"close": 130, "high": 140, "low": 125}), False)
 
     loaded = runtime.store.open_trade(runtime.position_key("BTC", "long"))
     assert loaded.trailing_stage == 3
     assert loaded.current_stop_loss == 120
+    assert loaded.midband_follow_bucket_start == pd.Timestamp("2030-01-01 08:00Z")
 
 
 def test_midband_follow_long_can_relax_but_not_below_entry():
@@ -534,6 +535,71 @@ def test_fourth_trailing_step_still_overrides_midband_follow():
     assert "5m low <" in reason
 
 
+def test_midband_follow_refreshes_only_once_per_1h_bucket():
+    trade = _trade("long", 100, 95)
+    stop, reason = live_updated_stop(trade, _row_1h("2030-01-01 08:00Z", lb=80, mb=120, ub=160), pd.Series({"close": 130, "high": 140, "low": 125}))
+    assert stop == 120
+    assert "midband-follow activated" in reason
+    assert trade.midband_follow_bucket_start == pd.Timestamp("2030-01-01 08:00Z")
+
+    trade.current_stop_loss = 120
+    stop, reason = live_updated_stop(trade, _row_1h("2030-01-01 08:00Z", lb=80, mb=103, ub=160), pd.Series({"close": 104, "high": 104, "low": 102}))
+    assert stop == 120
+    assert reason == "no stop change"
+
+    stop, reason = live_updated_stop(trade, _row_1h("2030-01-01 09:00Z", lb=80, mb=103, ub=160), pd.Series({"close": 104, "high": 104, "low": 102}))
+    assert stop == 103
+    assert "midband-follow active" in reason
+    assert trade.midband_follow_bucket_start == pd.Timestamp("2030-01-01 09:00Z")
+
+
+def test_midband_follow_short_refreshes_only_once_per_1h_bucket():
+    trade = _trade("short", 100, 105)
+    stop, reason = live_updated_stop(trade, _row_1h("2030-01-01 08:00Z", lb=40, mb=80, ub=120), pd.Series({"close": 70, "high": 75, "low": 60}))
+    assert stop == 80
+    assert "midband-follow activated" in reason
+    assert trade.midband_follow_bucket_start == pd.Timestamp("2030-01-01 08:00Z")
+
+    trade.current_stop_loss = 80
+    stop, reason = live_updated_stop(trade, _row_1h("2030-01-01 08:00Z", lb=40, mb=97, ub=120), pd.Series({"close": 96, "high": 98, "low": 96}))
+    assert stop == 80
+    assert reason == "no stop change"
+
+    stop, reason = live_updated_stop(trade, _row_1h("2030-01-01 09:00Z", lb=40, mb=97, ub=120), pd.Series({"close": 96, "high": 98, "low": 96}))
+    assert stop == 97
+    assert "midband-follow active" in reason
+    assert trade.midband_follow_bucket_start == pd.Timestamp("2030-01-01 09:00Z")
+
+
+def test_midband_follow_same_bucket_survives_restart(tmp_path):
+    config = _config(tmp_path)
+    store = LiveStateStore(config.storage.sqlite_path)
+    trade = store.create_trade("default:testnet:BTC:long", "BTC", "long", 1, 100, "strategy", 95)
+    trade.trailing_stage = 3
+    trade.current_stop_loss = 120
+    trade.midband_follow_bucket_start = pd.Timestamp("2030-01-01 08:00Z")
+    store.update_trade(trade)
+    restarted = LiveRuntime(config, FakeExchange(), LiveStateStore(config.storage.sqlite_path))
+
+    loaded = restarted.store.open_trade("default:testnet:BTC:long")
+    event = restarted.update_stop(loaded, _row_1h("2030-01-01 08:00Z", lb=80, mb=103, ub=160), pd.Series({"close": 104, "high": 104, "low": 102}), False)
+
+    assert event is None
+    assert restarted.store.open_trade("default:testnet:BTC:long").current_stop_loss == 120
+
+
+def test_fourth_trailing_step_still_works_inside_refreshed_midband_bucket():
+    trade = _trade("long", 100, 95)
+    trade.current_stop_loss = 120
+    trade.trailing_stage = 3
+    trade.midband_follow_bucket_start = pd.Timestamp("2030-01-01 08:00Z")
+
+    stop, reason = live_updated_stop(trade, _row_1h("2030-01-01 08:00Z", lb=80, mb=103, ub=160), pd.Series({"close": 150, "high": 161, "low": 145}))
+
+    assert stop == 150
+    assert "5m high >" in reason
+
+
 def test_first_trailing_step_full_reduction_matches_old_behavior():
     row_1h = pd.Series({"lb": 80, "mb": 120, "ub": 160})
     stop, _ = live_updated_stop(_trade("long", 100, 95), row_1h, pd.Series({"close": 101, "high": 102, "low": 100}), 1.0)
@@ -559,6 +625,10 @@ def test_first_trailing_step_half_reduces_initial_risk():
 def _trade(side, entry, stop):
     runtime_trade = LiveStateStore(":memory:").create_trade(f"acct:testnet:BTC:{side}", "BTC", side, 1, entry, "strategy", stop)
     return runtime_trade
+
+
+def _row_1h(time, *, lb, mb, ub):
+    return pd.Series({"lb": lb, "mb": mb, "ub": ub}, name=pd.Timestamp(time))
 
 
 def _confirmed_setup():

@@ -134,7 +134,10 @@ Candidate stop updates:
 1. If `5m close > midpoint(1h lower, 1h middle)`, candidate stop reduces initial risk by `first_step_risk_reduction`: `initial_stop_loss + (entry_price - initial_stop_loss) * first_step_risk_reduction`.
 2. If `5m close > 1h middle`, candidate stop is `entry_price`.
 3. If `5m high >= midpoint(1h middle, 1h upper)`, persist `trailing_stage = 3` and enter midband-follow mode.
-   - In midband-follow mode, candidate stop follows the latest completed `1h middle`: `max(1h middle, entry_price)`.
+   - On the activation poll, set one stop from the current completed `1h middle`: `max(1h middle, entry_price)`.
+   - Persist the refreshed `1h` bucket as `midband_follow_bucket_start`.
+   - Do not refresh this midband-follow stop again inside the same `1h` bucket just because the 30-second full poll runs again.
+   - In the next `1h` bucket, the first relevant poll may refresh once from that bucket's completed `1h middle`.
    - This may relax the stop versus the prior hour's middle band, but never below entry price.
 4. If `5m high > 1h upper`, candidate stop is `5m close`.
 
@@ -149,7 +152,10 @@ Candidate stop updates:
 1. If `5m close < midpoint(1h upper, 1h middle)`, candidate stop reduces initial risk by `first_step_risk_reduction`: `initial_stop_loss - (initial_stop_loss - entry_price) * first_step_risk_reduction`.
 2. If `5m close < 1h middle`, candidate stop is `entry_price`.
 3. If `5m low <= midpoint(1h lower, 1h middle)`, persist `trailing_stage = 3` and enter midband-follow mode.
-   - In midband-follow mode, candidate stop follows the latest completed `1h middle`: `min(1h middle, entry_price)`.
+   - On the activation poll, set one stop from the current completed `1h middle`: `min(1h middle, entry_price)`.
+   - Persist the refreshed `1h` bucket as `midband_follow_bucket_start`.
+   - Do not refresh this midband-follow stop again inside the same `1h` bucket just because the 30-second full poll runs again.
+   - In the next `1h` bucket, the first relevant poll may refresh once from that bucket's completed `1h middle`.
    - This may relax the stop versus the prior hour's middle band, but never above entry price.
 4. If `5m low < 1h lower`, candidate stop is `5m close`.
 
@@ -189,6 +195,7 @@ Required persistent state:
 
 - open managed trades
 - trailing stage for open managed trades
+- midband-follow refreshed 1h bucket for open managed trades
 - pending setup state
 - 15m RSI baseline
 - 15m confirmation state

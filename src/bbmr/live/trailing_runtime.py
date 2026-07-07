@@ -187,8 +187,9 @@ class LiveRuntime:
 
     def update_stop(self, trade: LiveTrade, row_1h: pd.Series, row_5m: pd.Series, allow_orders: bool, dry_run: bool = False) -> str | None:
         old_stage = trade.trailing_stage
+        old_bucket = trade.midband_follow_bucket_start
         new_stop, reason = live_updated_stop(trade, row_1h, row_5m, self.strategy_config.trailing_stop.first_step_risk_reduction)
-        if new_stop == trade.current_stop_loss and trade.trailing_stage == old_stage:
+        if new_stop == trade.current_stop_loss and trade.trailing_stage == old_stage and _same_time(trade.midband_follow_bucket_start, old_bucket):
             return None
         old_stop = trade.current_stop_loss
         if new_stop != trade.current_stop_loss:
@@ -197,7 +198,9 @@ class LiveRuntime:
         self.store.update_trade(trade)
         self.store.append_event("stop_updated", trade.symbol, trade=trade, event_time=self._now())
         if new_stop == old_stop:
-            return f"{trade.symbol} {reason}; trailing stage {old_stage} -> {trade.trailing_stage}"
+            if trade.trailing_stage != old_stage:
+                return f"{trade.symbol} {reason}; trailing stage {old_stage} -> {trade.trailing_stage}"
+            return f"{trade.symbol} {reason}; midband bucket refreshed"
         return f"{trade.symbol} {reason}; stop moved {old_stop} -> {new_stop}"
 
     def entry_notional(self, equity: float) -> float:
@@ -346,6 +349,7 @@ def live_updated_stop(trade: LiveTrade, row_1h: pd.Series, row_5m: pd.Series, fi
     high_5m = float(row_5m["high"])
     low_5m = float(row_5m["low"])
     candidates: list[tuple[float, str]] = []
+    bucket_start = _midband_follow_bucket_start(row_1h)
     if trade.side == "long":
         midband_follow = trade.trailing_stage >= 3
         stage_activated = False
@@ -358,7 +362,8 @@ def live_updated_stop(trade: LiveTrade, row_1h: pd.Series, row_5m: pd.Series, fi
             trade.trailing_stage = max(trade.trailing_stage, 3)
             midband_follow = True
             stage_activated = True
-        if midband_follow:
+        if midband_follow and (stage_activated or _should_refresh_midband_bucket(trade, bucket_start)):
+            trade.midband_follow_bucket_start = bucket_start
             reason = "5m high >= midpoint(1h middle, 1h upper); midband-follow activated" if stage_activated else "midband-follow active; following latest completed 1h middle"
             candidates.append((max(mid_1h, trade.entry_price), reason))
         if high_5m > ub_1h:
@@ -379,7 +384,8 @@ def live_updated_stop(trade: LiveTrade, row_1h: pd.Series, row_5m: pd.Series, fi
         trade.trailing_stage = max(trade.trailing_stage, 3)
         midband_follow = True
         stage_activated = True
-    if midband_follow:
+    if midband_follow and (stage_activated or _should_refresh_midband_bucket(trade, bucket_start)):
+        trade.midband_follow_bucket_start = bucket_start
         reason = "5m low <= midpoint(1h lower, 1h middle); midband-follow activated" if stage_activated else "midband-follow active; following latest completed 1h middle"
         candidates.append((min(mid_1h, trade.entry_price), reason))
     if low_5m < lb_1h:
@@ -388,6 +394,20 @@ def live_updated_stop(trade: LiveTrade, row_1h: pd.Series, row_5m: pd.Series, fi
         return min(candidates, default=(trade.current_stop_loss, "no stop change"))
     valid = [(stop, reason) for stop, reason in candidates if stop < trade.current_stop_loss]
     return min(valid, default=(trade.current_stop_loss, "no stop change"))
+
+
+def _should_refresh_midband_bucket(trade: LiveTrade, bucket_start: pd.Timestamp | None) -> bool:
+    return bucket_start is None or not _same_time(trade.midband_follow_bucket_start, bucket_start)
+
+
+def _midband_follow_bucket_start(row_1h: pd.Series) -> pd.Timestamp | None:
+    name = getattr(row_1h, "name", None)
+    if name is None:
+        return None
+    try:
+        return _utc_time(name).floor("h")
+    except Exception:
+        return None
 
 
 def latest_completed_features(exchange, symbol: str, strategy_config) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
