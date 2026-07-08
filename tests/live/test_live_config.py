@@ -22,6 +22,9 @@ def test_live_config_loads_trailing_strategy():
     assert config.execution.idle_1h_aligned_poll is True
     assert config.execution.idle_candle_grace_seconds == 10
     assert config.execution.idle_position_guard_seconds == 30
+    assert config.execution.margin_fraction == 0.15
+    assert config.execution.leverage == 3
+    assert config.execution.adverse_slope_leverage == 2
 
 
 def test_old_strategy_config_is_rejected():
@@ -50,6 +53,13 @@ def test_other_trailing_strategy_path_is_rejected(tmp_path):
 def test_margin_fraction_must_be_between_0_and_1(fraction):
     data = _data()
     data["execution"]["margin_fraction"] = fraction
+    with pytest.raises(ValidationError):
+        LiveConfig.model_validate(data)
+
+
+def test_leverage_fields_are_validated():
+    data = _data()
+    data["execution"]["adverse_slope_leverage"] = 0
     with pytest.raises(ValidationError):
         LiveConfig.model_validate(data)
 

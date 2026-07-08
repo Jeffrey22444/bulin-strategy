@@ -16,6 +16,7 @@ class FakeExchange:
         self.stop_orders = []
         self.cancelled = []
         self.entries = []
+        self.closes = []
         self.leverage_calls = []
 
     def create_reduce_only_stop(self, symbol, side, qty, stop_price):
@@ -29,6 +30,10 @@ class FakeExchange:
     def create_market_entry(self, symbol, side, qty):
         self.entries.append((symbol, side, qty))
         return {"id": "entry-1", "filled": qty}
+
+    def close_position_market(self, symbol, side, qty):
+        self.closes.append((symbol, side, qty))
+        return {"id": "close-1", "filled": qty, "price": 120}
 
     def set_leverage(self, symbol, leverage, margin_mode):
         self.leverage_calls.append((symbol, leverage, margin_mode))
@@ -159,9 +164,24 @@ def _future_long_features(close_5m=99, close_time="2030-01-01 09:35"):
     return one_h, fifteen_m, five_m
 
 
+def _adverse_long_features():
+    one_h = _frame(
+        ["2030-01-01 05:00", "2030-01-01 06:00", "2030-01-01 07:00", "2030-01-01 08:00"],
+        [
+            {"open": 122, "high": 123, "low": 101, "close": 122, "lb": 102, "mb": 122, "ub": 142, "rsi14": 50},
+            {"open": 121, "high": 122, "low": 100, "close": 121, "lb": 101, "mb": 121, "ub": 141, "rsi14": 50},
+            {"open": 120, "high": 121, "low": 99, "close": 120, "lb": 100, "mb": 120, "ub": 140, "rsi14": 50},
+            {"open": 120, "high": 121, "low": 90, "close": 95, "lb": 100, "mb": 120, "ub": 140, "rsi14": 20},
+        ],
+    )
+    _, fifteen_m, five_m = _future_long_features(close_5m=105)
+    return one_h, fifteen_m, five_m
+
+
 def test_entry_sizing_uses_margin_fraction_times_leverage(tmp_path):
     runtime, _ = _runtime(tmp_path)
     assert runtime.entry_notional(10000) == 10000 * runtime.live_config.execution.margin_fraction * runtime.live_config.execution.leverage
+    assert runtime.entry_notional(10000, 2) == 10000 * runtime.live_config.execution.margin_fraction * 2
 
 
 def test_testnet_orders_require_config_and_cli(tmp_path):
@@ -208,8 +228,28 @@ def test_live_strategy_ignores_old_v3_2_filter_columns(tmp_path):
     runtime, exchange = _runtime(tmp_path)
     events = runtime.maybe_open_strategy_trade("BTC", *_long_features_with_old_filter_columns(), 10000, True)
     expected_qty = runtime.entry_notional(10000) / 105
+    assert exchange.leverage_calls == [("BTC", 3, "cross")]
     assert exchange.entries == [("BTC", "long", round(expected_qty, 8))]
     assert any("entry opened" in event for event in events)
+
+
+def test_strategy_entry_uses_adverse_slope_leverage_when_active(tmp_path):
+    runtime = _runtime_with_exchange(tmp_path, ClockedExchange("2030-01-01 09:35Z"))
+
+    events = runtime.maybe_open_strategy_trade("SOL", *_adverse_long_features(), 10000, True)
+
+    expected_qty = runtime.entry_notional(10000, 2) / 105
+    assert runtime.exchange.leverage_calls == [("SOL", 2, "cross")]
+    assert runtime.exchange.entries == [("SOL", "long", round(expected_qty, 8))]
+    assert any("entry opened" in event for event in events)
+
+
+def test_entry_leverage_uses_setup_side_adverse_slope(tmp_path):
+    runtime = _runtime_with_exchange(tmp_path, ClockedExchange("2030-01-01 12:05Z"))
+
+    assert runtime.entry_leverage("long", _slope_features([121, 120, 119, 118], side="long")) == 2
+    assert runtime.entry_leverage("short", _slope_features([118, 119, 120, 121], side="short")) == 2
+    assert runtime.entry_leverage("long", _slope_features([118, 118, 118, 118], side="long")) == 3
 
 
 def test_requires_15m_reversal_when_enabled(tmp_path):
@@ -441,6 +481,84 @@ def test_manual_addon_updates_merged_quantity(tmp_path):
     assert exchange.stop_orders[-1]["qty"] == 2
 
 
+def test_adverse_slope_take_profit_long_active_and_inactive(tmp_path):
+    runtime = _runtime_with_exchange(tmp_path, ClockedExchange("2030-01-01 12:05Z"))
+    trade = runtime.store.create_trade(runtime.position_key("BTC", "long"), "BTC", "long", 1, 100, "strategy", 95)
+
+    event = runtime.update_adverse_slope_take_profit(trade, _slope_features([121, 120, 119, 118], side="long"))
+
+    assert "adverse 1h middle slope active" in event
+    assert trade.adverse_slope_tp_active is True
+    assert trade.adverse_slope_tp_price == 118
+
+    runtime.exchange._now = "2030-01-01 13:05Z"
+    event = runtime.update_adverse_slope_take_profit(trade, _slope_features([118, 118, 118, 118], side="long", start="2030-01-01 09:00Z"))
+
+    assert "special TP cleared" in event
+    assert trade.adverse_slope_tp_active is False
+    assert trade.adverse_slope_tp_bucket_start is None
+    assert trade.adverse_slope_tp_price is None
+
+
+def test_adverse_slope_take_profit_short_active(tmp_path):
+    runtime = _runtime_with_exchange(tmp_path, ClockedExchange("2030-01-01 12:05Z"))
+    trade = runtime.store.create_trade(runtime.position_key("BTC", "short"), "BTC", "short", 1, 100, "strategy", 105)
+
+    event = runtime.update_adverse_slope_take_profit(trade, _slope_features([118, 119, 120, 121], side="short"))
+
+    assert "adverse 1h middle slope active" in event
+    assert trade.adverse_slope_tp_active is True
+    assert trade.adverse_slope_tp_price == 121
+
+
+def test_adverse_slope_take_profit_does_not_enable_manual_adopted(tmp_path):
+    runtime = _runtime_with_exchange(tmp_path, ClockedExchange("2030-01-01 12:05Z"))
+    trade = runtime.store.create_trade(runtime.position_key("BTC", "long"), "BTC", "long", 1, 100, "manual_adopted", 95)
+
+    event = runtime.update_adverse_slope_take_profit(trade, _slope_features([121, 120, 119, 118], side="long"))
+
+    assert event is None
+    assert trade.adverse_slope_tp_active is False
+
+
+def test_adverse_slope_take_profit_ignores_forming_1h(tmp_path):
+    runtime = _runtime_with_exchange(tmp_path, ClockedExchange("2030-01-01 12:30Z"))
+    trade = runtime.store.create_trade(runtime.position_key("BTC", "long"), "BTC", "long", 1, 100, "strategy", 95)
+
+    event = runtime.update_adverse_slope_take_profit(trade, _slope_features([118, 118, 118, 118, 100], side="long"))
+
+    assert event is None
+    assert trade.adverse_slope_tp_active is False
+    assert trade.adverse_slope_tp_bucket_start is None
+    assert trade.adverse_slope_tp_price is None
+
+
+def test_adverse_slope_take_profit_closes_when_triggered(tmp_path):
+    runtime, exchange = _runtime(tmp_path)
+    trade = runtime.store.create_trade(runtime.position_key("BTC", "long"), "BTC", "long", 1, 100, "strategy", 95)
+    trade.system_stop_order_id = "stop-1"
+    trade.adverse_slope_tp_active = True
+    trade.adverse_slope_tp_price = 120
+    runtime.store.update_trade(trade)
+
+    event = runtime.maybe_close_adverse_slope_take_profit(trade, 121, True)
+
+    assert "position closed" in event
+    assert exchange.closes == [("BTC", "long", 1)]
+    assert exchange.cancelled == [("BTC", "stop-1")]
+    assert runtime.store.open_trade(runtime.position_key("BTC", "long")) is None
+
+
+def test_adverse_slope_take_profit_inactive_does_not_close(tmp_path):
+    runtime, exchange = _runtime(tmp_path)
+    trade = runtime.store.create_trade(runtime.position_key("BTC", "long"), "BTC", "long", 1, 100, "strategy", 95)
+
+    event = runtime.maybe_close_adverse_slope_take_profit(trade, 121, True)
+
+    assert event is None
+    assert exchange.closes == []
+
+
 def test_long_high_based_stop_rules():
     trade = _trade("long", 100, 95)
     row_1h = pd.Series({"lb": 80, "mb": 120, "ub": 160})
@@ -629,6 +747,14 @@ def _trade(side, entry, stop):
 
 def _row_1h(time, *, lb, mb, ub):
     return pd.Series({"lb": lb, "mb": mb, "ub": ub}, name=pd.Timestamp(time))
+
+
+def _slope_features(middle_values, *, side, start="2030-01-01 08:00Z"):
+    index = pd.date_range(pd.Timestamp(start), periods=len(middle_values), freq="h")
+    rows = []
+    for middle in middle_values:
+        rows.append({"lb": middle - 20, "mb": middle, "ub": middle + 20, "close": middle, "rsi14": 50})
+    return pd.DataFrame(rows, index=index)
 
 
 def _confirmed_setup():

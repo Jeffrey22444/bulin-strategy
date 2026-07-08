@@ -31,6 +31,9 @@ class LiveTrade:
     confirm_15m_time: pd.Timestamp | None = None
     trailing_stage: int = 0
     midband_follow_bucket_start: pd.Timestamp | None = None
+    adverse_slope_tp_active: bool = False
+    adverse_slope_tp_bucket_start: pd.Timestamp | None = None
+    adverse_slope_tp_price: float | None = None
 
 
 @dataclass
@@ -152,8 +155,9 @@ class LiveStateStore:
             """
             INSERT INTO live_trades
             (internal_trade_id, exchange_position_key, symbol, side, qty, entry_price, source, status, initial_stop_loss, current_stop_loss, system_stop_order_id,
-             entry_time, pnl_source, setup_trigger_time, setup_rsi_15m, confirm_15m_time, trailing_stage, midband_follow_bucket_start)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             entry_time, pnl_source, setup_trigger_time, setup_rsi_15m, confirm_15m_time, trailing_stage, midband_follow_bucket_start,
+             adverse_slope_tp_active, adverse_slope_tp_bucket_start, adverse_slope_tp_price)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 trade.internal_trade_id,
@@ -174,6 +178,9 @@ class LiveStateStore:
                 _iso(trade.confirm_15m_time),
                 trade.trailing_stage,
                 _iso(trade.midband_follow_bucket_start),
+                int(trade.adverse_slope_tp_active),
+                _iso(trade.adverse_slope_tp_bucket_start),
+                trade.adverse_slope_tp_price,
             ),
         )
         self.connection.commit()
@@ -190,7 +197,8 @@ class LiveStateStore:
         self.connection.execute(
             """
             UPDATE live_trades
-            SET qty = ?, entry_price = ?, initial_stop_loss = ?, current_stop_loss = ?, system_stop_order_id = ?, pnl_source = ?, trailing_stage = ?, midband_follow_bucket_start = ?
+            SET qty = ?, entry_price = ?, initial_stop_loss = ?, current_stop_loss = ?, system_stop_order_id = ?, pnl_source = ?,
+                trailing_stage = ?, midband_follow_bucket_start = ?, adverse_slope_tp_active = ?, adverse_slope_tp_bucket_start = ?, adverse_slope_tp_price = ?
             WHERE internal_trade_id = ?
             """,
             (
@@ -202,6 +210,9 @@ class LiveStateStore:
                 trade.pnl_source,
                 trade.trailing_stage,
                 _iso(trade.midband_follow_bucket_start),
+                int(trade.adverse_slope_tp_active),
+                _iso(trade.adverse_slope_tp_bucket_start),
+                trade.adverse_slope_tp_price,
                 trade.internal_trade_id,
             ),
         )
@@ -322,6 +333,9 @@ class LiveStateStore:
             "confirm_15m_time": "TEXT",
             "trailing_stage": "INTEGER NOT NULL DEFAULT 0",
             "midband_follow_bucket_start": "TEXT",
+            "adverse_slope_tp_active": "INTEGER NOT NULL DEFAULT 0",
+            "adverse_slope_tp_bucket_start": "TEXT",
+            "adverse_slope_tp_price": "REAL",
         }.items():
             if name not in columns:
                 self.connection.execute(f"ALTER TABLE live_trades ADD COLUMN {name} {definition}")
@@ -351,6 +365,9 @@ def _trade(row: sqlite3.Row) -> LiveTrade:
         _timestamp(row["confirm_15m_time"]),
         int(row["trailing_stage"]),
         _timestamp(row["midband_follow_bucket_start"]),
+        bool(row["adverse_slope_tp_active"]),
+        _timestamp(row["adverse_slope_tp_bucket_start"]),
+        None if row["adverse_slope_tp_price"] is None else float(row["adverse_slope_tp_price"]),
     )
 
 

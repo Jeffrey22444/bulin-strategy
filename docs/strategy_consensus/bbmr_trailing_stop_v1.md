@@ -113,11 +113,12 @@ notional = account_equity * margin_fraction * leverage
 
 Current live config:
 
-- `margin_fraction = 0.11`
+- `margin_fraction = 0.15`
 - `leverage = 3`
-- notional exposure is about `45%` of account equity.
+- normal entry notional exposure is `45%` of account equity.
+- if the entry-side adverse-slope take-profit state is active at strategy entry, use `adverse_slope_leverage = 2`, so notional exposure is `30%` of account equity.
 
-This means "10%" refers to margin, not notional position size.
+This means "15%" refers to margin, not notional position size.
 
 ## Strategy Add-On Rule
 
@@ -161,6 +162,34 @@ Candidate stop updates:
 
 Before midband-follow mode, only move the stop downward. In midband-follow mode, allow the middle-band stop to relax no higher than entry price. If multiple candidates apply, use the lowest candidate stop.
 
+## Adverse Slope Midband Take Profit
+
+This is a parallel active take-profit path, not part of the trailing-stop chain.
+
+Configured by:
+
+```yaml
+adverse_slope_take_profit:
+  enabled: true
+  slope_n: 3
+  slope_threshold_pct: 0.003
+  near_middle_frac: 0.0
+```
+
+- It applies only to `strategy` entries, not `manual_adopted` positions.
+- It is evaluated once at strategy entry and then at most once per new completed `1h` bucket.
+- Signed slope is `current_1h_middle / middle_N_hours_ago - 1`.
+- Long active condition: `signed_slope <= -slope_threshold_pct`.
+- Short active condition: `signed_slope >= slope_threshold_pct`.
+- If a new evaluated `1h` bucket no longer satisfies the condition, clear the active state and TP price.
+- Long TP price: `1h middle - (1h middle - 1h lower) * near_middle_frac`.
+- Short TP price: `1h middle + (1h upper - 1h middle) * near_middle_frac`.
+- With `near_middle_frac = 0.0`, the TP price is the `1h middle`.
+- While active, each managed-position poll checks live price:
+  - Long closes when live price is `>= TP`.
+  - Short closes when live price is `<= TP`.
+- The protective reduce-only stop remains in place while waiting. After active TP market close succeeds, the normal close/archive cleanup cancels the system stop and archives the trade.
+
 ## Manual Position Handling
 
 The live system polls Hyperliquid positions and reconciles them with local state.
@@ -196,6 +225,7 @@ Required persistent state:
 - open managed trades
 - trailing stage for open managed trades
 - midband-follow refreshed 1h bucket for open managed trades
+- adverse-slope active TP state for open strategy trades
 - pending setup state
 - 15m RSI baseline
 - 15m confirmation state

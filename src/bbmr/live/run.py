@@ -72,6 +72,15 @@ def _poll_once(runtime: LiveRuntime, client: HyperliquidClient, symbols: list[st
         trade = runtime.managed_trade(symbol)
         if trade:
             row_5m = latest_completed_row(features[2], poll_time, "5m")
+            state_event = runtime.update_adverse_slope_take_profit(trade, features[0])
+            if state_event:
+                print(f"{display_time} {state_event}")
+            if trade.adverse_slope_tp_active:
+                tp_event = runtime.maybe_close_adverse_slope_take_profit(trade, client.get_market_price(symbol), allow_orders, dry_run)
+                if tp_event:
+                    print(f"{display_time} {tp_event}")
+                    if runtime.managed_trade(symbol) is None:
+                        continue
             event = runtime.update_stop(trade, features[0].iloc[-1], row_5m, allow_orders, dry_run) if row_5m is not None else None
             print(f"{display_time} {event or f'{symbol} managed position; waiting for trailing-stop update'}")
             continue

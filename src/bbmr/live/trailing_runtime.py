@@ -151,7 +151,8 @@ class LiveRuntime:
             return events
 
         entry_price = float(row_5m["close"])
-        notional = self.entry_notional(equity)
+        selected_leverage = self.entry_leverage(setup.side, features_1h)
+        notional = self.entry_notional(equity, selected_leverage)
         qty = notional / entry_price
         stop = _initial_stop_loss(setup.side, entry_price, self.strategy_config.trailing_stop.initial_stop_pct)
         trade = self.store.create_trade(
@@ -168,7 +169,7 @@ class LiveRuntime:
             confirm_15m_time=setup.confirm_15m_time,
         )
         if allow_orders and not dry_run:
-            self.exchange.set_leverage(symbol, self.live_config.execution.leverage, self.live_config.exchange.margin_mode)
+            self.exchange.set_leverage(symbol, selected_leverage, self.live_config.exchange.margin_mode)
             order = self.exchange.create_market_entry(symbol, setup.side, self.exchange.format_qty(symbol, qty))
             if order.get("filled"):
                 trade.qty = float(order["filled"])
@@ -179,6 +180,7 @@ class LiveRuntime:
                 trade.current_stop_loss = trade.initial_stop_loss
             self._replace_stop(trade, allow_orders, dry_run)
             self.store.update_trade(trade)
+        self.update_adverse_slope_take_profit(trade, features_1h)
         events.append(f"{symbol} entry opened; notional={notional:.2f}, qty={qty:.8f}")
         self.setups.pop(symbol, None)
         self.store.delete_pending_setup(symbol)
@@ -203,8 +205,58 @@ class LiveRuntime:
             return f"{trade.symbol} {reason}; midband bucket refreshed"
         return f"{trade.symbol} {reason}; stop moved {old_stop} -> {new_stop}"
 
-    def entry_notional(self, equity: float) -> float:
-        return equity * self.live_config.execution.margin_fraction * self.live_config.execution.leverage
+    def update_adverse_slope_take_profit(self, trade: LiveTrade, features_1h: pd.DataFrame) -> str | None:
+        config = self.strategy_config.adverse_slope_take_profit
+        if not config.enabled or trade.source != "strategy":
+            return None
+        completed_1h = _completed_features(features_1h, self._now(), "1h")
+        if completed_1h is None:
+            return None
+        state = adverse_slope_take_profit_state(trade.side, completed_1h, config)
+        if state is None:
+            return None
+        was_active = trade.adverse_slope_tp_active
+        if state["active"]:
+            if was_active and _same_time(trade.adverse_slope_tp_bucket_start, state["bucket_start"]):
+                return None
+            trade.adverse_slope_tp_bucket_start = state["bucket_start"]
+            trade.adverse_slope_tp_active = True
+            trade.adverse_slope_tp_price = state["tp_price"]
+            self.store.update_trade(trade)
+            return f"{trade.symbol} adverse 1h middle slope active; tp={state['tp_price']}"
+        if was_active:
+            trade.adverse_slope_tp_bucket_start = None
+            trade.adverse_slope_tp_active = False
+            trade.adverse_slope_tp_price = None
+            self.store.update_trade(trade)
+            return f"{trade.symbol} adverse 1h middle slope inactive; special TP cleared"
+        return None
+
+    def maybe_close_adverse_slope_take_profit(self, trade: LiveTrade, market_price: float, allow_orders: bool, dry_run: bool = False) -> str | None:
+        if not trade.adverse_slope_tp_active or trade.adverse_slope_tp_price is None:
+            return None
+        triggered = market_price >= trade.adverse_slope_tp_price if trade.side == "long" else market_price <= trade.adverse_slope_tp_price
+        if not triggered:
+            return None
+        if not allow_orders or dry_run:
+            return f"{trade.symbol} adverse slope TP triggered; close skipped"
+        self.exchange.close_position_market(trade.symbol, trade.side, self.exchange.format_qty(trade.symbol, trade.qty))
+        self._cancel_system_stop(trade, dry_run)
+        self._archive_trade(trade.symbol, trade, "adverse_slope_take_profit")
+        return f"{trade.symbol} adverse slope TP triggered; position closed"
+
+    def entry_leverage(self, side: str, features_1h: pd.DataFrame) -> int:
+        config = self.strategy_config.adverse_slope_take_profit
+        if config.enabled:
+            completed_1h = _completed_features(features_1h, self._now(), "1h")
+            state = adverse_slope_take_profit_state(side, completed_1h, config) if completed_1h is not None else None
+            if state and state["active"]:
+                return self.live_config.execution.adverse_slope_leverage
+        return self.live_config.execution.leverage
+
+    def entry_notional(self, equity: float, leverage: int | None = None) -> float:
+        selected_leverage = self.live_config.execution.leverage if leverage is None else leverage
+        return equity * self.live_config.execution.margin_fraction * selected_leverage
 
     def _open_local_for_symbol(self, symbol: str) -> LiveTrade | None:
         for side in ("long", "short"):
@@ -394,6 +446,33 @@ def live_updated_stop(trade: LiveTrade, row_1h: pd.Series, row_5m: pd.Series, fi
         return min(candidates, default=(trade.current_stop_loss, "no stop change"))
     valid = [(stop, reason) for stop, reason in candidates if stop < trade.current_stop_loss]
     return min(valid, default=(trade.current_stop_loss, "no stop change"))
+
+
+def adverse_slope_take_profit_state(side: str, features_1h: pd.DataFrame, config) -> dict | None:
+    if len(features_1h) <= config.slope_n:
+        return None
+    current = features_1h.iloc[-1]
+    past = features_1h.iloc[-(config.slope_n + 1)]
+    past_middle = float(past["mb"])
+    if past_middle == 0:
+        return None
+    current_middle = float(current["mb"])
+    slope = current_middle / past_middle - 1
+    active = slope <= -config.slope_threshold_pct if side == "long" else slope >= config.slope_threshold_pct
+    tp_price = None
+    if active:
+        if side == "long":
+            tp_price = current_middle - (current_middle - float(current["lb"])) * config.near_middle_frac
+        else:
+            tp_price = current_middle + (float(current["ub"]) - current_middle) * config.near_middle_frac
+    return {"bucket_start": _midband_follow_bucket_start(current), "active": active, "tp_price": tp_price}
+
+
+def _completed_features(features: pd.DataFrame, now, timeframe: str) -> pd.DataFrame | None:
+    row = latest_completed_row(features, now, timeframe)
+    if row is None:
+        return None
+    return features.loc[: row.name]
 
 
 def _should_refresh_midband_bucket(trade: LiveTrade, bucket_start: pd.Timestamp | None) -> bool:

@@ -94,6 +94,13 @@ class TrailingStopSection(StrictModel):
     first_step_risk_reduction: float = Field(1.0, ge=0, le=1)
 
 
+class AdverseSlopeTakeProfitSection(StrictModel):
+    enabled: bool = False
+    slope_n: int = Field(3, gt=0)
+    slope_threshold_pct: float = Field(0.003, ge=0)
+    near_middle_frac: float = Field(0.0, ge=0, le=1)
+
+
 class BandwidthStateSection(StrictModel):
     squeeze_pct: float = Field(ge=0, le=100)
     high_pct: float = Field(ge=0, le=100)
@@ -236,6 +243,7 @@ class TrailingStrategyConfig(StrictModel):
     rsi: RsiSection
     entry_confirmation: TrailingEntryConfirmationSection = Field(default_factory=TrailingEntryConfirmationSection)
     trailing_stop: TrailingStopSection = Field(default_factory=TrailingStopSection)
+    adverse_slope_take_profit: AdverseSlopeTakeProfitSection = Field(default_factory=AdverseSlopeTakeProfitSection)
     costs: CostsSection
     safety: SafetySection
 

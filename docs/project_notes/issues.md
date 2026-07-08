@@ -15,6 +15,27 @@ Track planning, handoffs, execution progress, blockers, and completed work here.
 
 ## Entries
 
+### 2026-07-08 - Adjust Live Entry Sizing For Adverse Slope
+- **Status**: Completed
+- **Zone**: Execution
+- **Description**: Changing `bbmr_trailing_stop_v1` live entry sizing to default `15% * 3x`, with `15% * 2x` when the entry-side adverse-slope TP state is active at entry.
+- **Handoff**: None
+- **Notes**: Set live margin fraction to `0.15`, added `execution.adverse_slope_leverage = 2`, and selected per-entry leverage from the current symbol/side's completed-1h adverse-slope state. `entry_notional` and `set_leverage()` now share the selected leverage for strategy entry only. No changes to existing positions, manual handling, stops, TP trigger behavior, or safety gates. Verified with `.venv/bin/python -m pytest tests/live/test_live_config.py tests/live/test_trailing_runtime.py tests/test_config.py -q`.
+
+### 2026-07-07 - Implement Adverse Slope Midband Take Profit
+- **Status**: Completed
+- **Zone**: Execution
+- **Description**: Adding a strategy-only adverse 1h middle-band slope active take-profit path in parallel with the trailing-stop chain.
+- **Handoff**: None
+- **Notes**: Created branch `codex/adverse-slope-midband-take-profit`; added config, minimal live trade state, strategy-only active/clear/trigger runtime behavior, consensus docs, and focused tests. Acceptance follow-up fixed completed-1h-only evaluation and full field clearing on inactive state. Verified with `.venv/bin/python -m pytest tests/test_config.py tests/live/test_trailing_runtime.py tests/live/test_state_store.py tests/live/test_live_run.py -q`.
+
+### 2026-07-07 - Plan Adverse Slope Midband Take Profit
+- **Status**: Planned
+- **Zone**: Planning
+- **Description**: Planning a parallel active take-profit path for positions opened against a strong 1h middle-band slope.
+- **Handoff**: None
+- **Notes**: User-approved direction: keep RSI thresholds unchanged; add an `adverse_slope_take_profit` strategy config with `enabled`, `slope_n`, `slope_threshold_pct`, and `near_middle_frac` defaulting to `0.0`. Special state is evaluated at entry and then only once per new completed 1h bucket. While active, each 30s managed-position poll checks live price against the midband-derived TP and may close market; when the next 1h bucket no longer satisfies adverse-slope conditions, the special TP state must be cleared so normal trailing-stop logic is not polluted.
+
 ### 2026-07-07 - Implement Hourly Midband Follow Refresh
 - **Status**: Completed
 - **Zone**: Execution

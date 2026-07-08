@@ -13,8 +13,9 @@ exchange:
 
 execution:
   allow_testnet_orders: true
-  margin_fraction: 0.11
+  margin_fraction: 0.15
   leverage: 3
+  adverse_slope_leverage: 2
   allow_strategy_add: false
   adopt_manual_positions: true
   manage_full_manual_added_size: true

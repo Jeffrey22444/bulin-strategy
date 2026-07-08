@@ -32,6 +32,12 @@ trailing_stop:
   initial_stop_pct: 0.05
   first_step_risk_reduction: 0.5
 
+adverse_slope_take_profit:
+  enabled: true
+  slope_n: 3
+  slope_threshold_pct: 0.003
+  near_middle_frac: 0.0
+
 costs:
   taker_fee_bps: 0.0
   maker_fee_bps: 0.0

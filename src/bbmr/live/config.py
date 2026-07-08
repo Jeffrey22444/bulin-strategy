@@ -39,6 +39,7 @@ class LiveExecutionSection(StrictModel):
     allow_testnet_orders: bool = False
     margin_fraction: float = Field(gt=0, lt=1)
     leverage: int = Field(ge=1)
+    adverse_slope_leverage: int = Field(default=2, ge=1)
     allow_strategy_add: bool = False
     adopt_manual_positions: bool = True
     manage_full_manual_added_size: bool = True

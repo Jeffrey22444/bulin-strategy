@@ -55,3 +55,18 @@ def test_store_persists_midband_follow_bucket_start(tmp_path):
 
     assert loaded.trailing_stage == 3
     assert loaded.midband_follow_bucket_start == pd.Timestamp("2030-01-01 08:00Z")
+
+
+def test_store_persists_adverse_slope_take_profit_state(tmp_path):
+    store = LiveStateStore(str(tmp_path / "live.sqlite3"))
+    trade = store.create_trade("acct:testnet:BTC:long", "BTC", "long", 1, 100, "strategy", 95)
+    trade.adverse_slope_tp_active = True
+    trade.adverse_slope_tp_bucket_start = pd.Timestamp("2030-01-01 08:00Z")
+    trade.adverse_slope_tp_price = 120
+    store.update_trade(trade)
+
+    loaded = LiveStateStore(str(tmp_path / "live.sqlite3")).open_trade("acct:testnet:BTC:long")
+
+    assert loaded.adverse_slope_tp_active is True
+    assert loaded.adverse_slope_tp_bucket_start == pd.Timestamp("2030-01-01 08:00Z")
+    assert loaded.adverse_slope_tp_price == 120

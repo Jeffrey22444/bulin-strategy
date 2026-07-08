@@ -36,6 +36,10 @@ def test_loads_trailing_strategy_config():
     assert config.rsi.warmup_bars == 500
     assert config.entry_confirmation.require_15m_rsi_reversal is False
     assert config.trailing_stop.first_step_risk_reduction == 0.5
+    assert config.adverse_slope_take_profit.enabled is True
+    assert config.adverse_slope_take_profit.slope_n == 3
+    assert config.adverse_slope_take_profit.slope_threshold_pct == 0.003
+    assert config.adverse_slope_take_profit.near_middle_frac == 0.0
 
 
 def test_trailing_entry_confirmation_defaults_to_required():
