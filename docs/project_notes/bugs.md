@@ -14,6 +14,24 @@ Track recurring or instructive bugs here. Keep entries brief and chronological.
 
 ## Entries
 
+### 2026-07-08 - Strategy entry could mark local open before exchange protection was confirmed
+- **Issue**: The live strategy entry path created a local `status=open` trade before real `set_leverage`, market entry, and protective stop creation were all confirmed.
+- **Root Cause**: `maybe_open_strategy_trade()` wrote the local trade before the exchange lifecycle completed, so later exchange failures could leave misleading local state or duplicate-entry risk.
+- **Solution**: For real orders, create `open` only after same symbol/side position confirmation and successful protective stop creation; filled entries with stop failure are stored as `entry_unprotected` and repaired by later reconcile.
+- **Prevention**: Focused tests cover leverage failure, market-entry failure, missing position confirmation, stop failure after fill, store persistence for `entry_unprotected`, and reconcile promotion to `open`.
+
+### 2026-07-08 - Adverse-slope TP archived before exchange position zero confirmation
+- **Issue**: The adverse-slope take-profit path could cancel the system stop and archive the local trade immediately after submitting a reduce-only market close.
+- **Root Cause**: `maybe_close_adverse_slope_take_profit()` treated close-order submission as final instead of confirming the same symbol/side exchange position was gone.
+- **Solution**: Fetch positions after close submission; archive only when the same symbol/side position is absent or zero, otherwise update local quantity and replace the protective stop for the remaining position.
+- **Prevention**: Focused live-runtime tests cover confirmed-zero archive, same-symbol/opposite-side isolation, residual same-side quantity protection, and close/fetch failure paths that keep the trade open.
+
+### 2026-07-08 - Protective stop replacement could leave an unprotected position
+- **Issue**: Replacing a managed protective stop could cancel the old system stop before the new reduce-only stop was created and could store `"None"` when the exchange response lacked an order id.
+- **Root Cause**: `_replace_stop()` performed cancel-then-create and used `str(order.get("id"))` without validating the returned id.
+- **Solution**: Create and validate the new reduce-only stop id before cancelling the old stop; on create failure or missing id, append `protective_stop_failed`, keep the prior local stop state, and block later strategy entries through a runtime emergency flag.
+- **Prevention**: Focused live-runtime tests cover stop-create failure, missing id, old-stop preservation, no `"None"` id writes, and strategy-entry blocking after a protective stop failure.
+
 ### 2026-07-01 - Live runner exited on transient exchange read timeout
 - **Issue**: Hyperliquid testnet read timeouts or short network failures from balance, positions, or candle fetches could bubble out of the live loop and stop the runner.
 - **Root Cause**: `_poll_once()` exchange reads were called without a live-loop boundary for recoverable timeout exceptions.

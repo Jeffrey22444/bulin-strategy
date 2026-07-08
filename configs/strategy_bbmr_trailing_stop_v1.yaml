@@ -22,8 +22,8 @@ rsi:
   period: 14
   method: "wilder"
   warmup_bars: 500
-  oversold: 31
-  overbought: 69
+  oversold: 32
+  overbought: 68
 
 entry_confirmation:
   require_15m_rsi_reversal: false

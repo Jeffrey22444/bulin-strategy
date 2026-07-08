@@ -15,6 +15,83 @@ Track planning, handoffs, execution progress, blockers, and completed work here.
 
 ## Entries
 
+### 2026-07-08 - Strategy Entry Execution Quality Guard
+- **Status**: Completed
+- **Zone**: Execution
+- **Description**: Adding pre-entry quote/spread checks and post-fill slippage journaling for real Hyperliquid strategy market entries.
+- **Handoff**: None
+- **Notes**: Current dirty `main` is treated as the accepted SAFETY-1 through SAFETY-7 baseline per worklog and user instruction. Added `execution.max_market_spread_bps` and `execution.max_entry_slippage_bps`; real strategy entries now block before `set_leverage()` when quote data is missing/invalid or spread is too wide, and record `entry_slippage_exceeded` when a confirmed fill deviates from the pre-entry quote reference. Scope stayed limited to new strategy market entries; no changes to signals, sizing, stop/TP formulas, manual reconcile, or mainnet gate. Verified with `.venv/bin/python -m pytest tests/live/test_hyperliquid_client.py tests/live/test_trailing_runtime.py tests/live/test_live_config.py -q`, `.venv/bin/python -m pytest tests -q`, and `git diff --check`.
+
+### 2026-07-08 - Mainnet Deferred Safety Backlog
+- **Status**: Planned
+- **Zone**: Planning
+- **Description**: Recording safety work that should be handled before enabling real mainnet orders, but does not need to block current Hyperliquid testnet iteration.
+- **Handoff**: None
+- **Notes**: Before mainnet unlock, re-read this entry plus `docs/strategy_consensus/bbmr_trailing_stop_v1.md` and the external safety audit. Deferred items: add exchange-side system order identity (`clientOrderId`/tag/prefix where Hyperliquid/ccxt supports it) for entries and protective stops; add startup reconciliation that compares local SQLite state with exchange positions/open orders and enters an explicit reconciliation-required state on mismatch; finish unknown order lifecycle recovery for network/API failures after order submission; add market execution sanity guards for spread/orderbook depth/slippage/fill sanity; replace the current hardcoded mainnet order block with a deliberate multi-gate unlock only after the above checks pass. Do not treat the disabled 15m RSI reversal as a safety vulnerability by itself; that remains a strategy choice.
+
+### 2026-07-08 - Strategy Entry Balance Safety Guard
+- **Status**: Completed
+- **Zone**: Execution
+- **Description**: Adding pre-order equity and available-margin guards before live strategy entries.
+- **Handoff**: None
+- **Notes**: Current mixed worktree is treated as the accepted baseline through SAFETY-6. `_poll_once()` now passes full balance into `maybe_open_strategy_trade()`, which blocks new strategy entries when equity is non-positive or available margin is below proposed margin. Existing position management, stop/TP, manual reconcile, sizing formula, and global notional cap semantics stay unchanged. Verified with `.venv/bin/python -m pytest tests/live/test_trailing_runtime.py tests/live/test_live_run.py tests/live/test_live_config.py -q` and `.venv/bin/python -m pytest tests -q`.
+
+### 2026-07-08 - SAFETY-6 Manual Position Config Gates
+- **Status**: Completed
+- **Zone**: Execution
+- **Description**: Making `adopt_manual_positions` and `manage_full_manual_added_size` actually gate manual position adoption and manual size-change management.
+- **Handoff**: None
+- **Notes**: Current mixed worktree is treated as the accepted baseline from previous safety tasks. `reconcile_symbol()` now skips unknown manual position adoption when `adopt_manual_positions=false`, and skips manual size/entry merge updates when `manage_full_manual_added_size=false`; SAFETY-4 `entry_unprotected` recovery remains active. Verified with `.venv/bin/python -m pytest tests/live/test_live_config.py tests/live/test_trailing_runtime.py tests/live/test_live_run.py -q`.
+
+### 2026-07-08 - SAFETY-5 Global Notional Risk Cap
+- **Status**: Completed
+- **Zone**: Execution
+- **Description**: Adding a live strategy-entry guard that blocks new entries when existing exchange notional plus proposed strategy notional exceeds the configured account-equity cap.
+- **Handoff**: None
+- **Notes**: User confirmed the current mixed worktree is an accepted baseline from other windows. Added `execution.max_total_notional_fraction` defaulting to `1.0`; `maybe_open_strategy_trade()` now blocks only new strategy entries when all exchange positions plus proposed strategy notional exceed the cap. Existing management, stop/TP/manual handling, and sizing formulas stay unchanged. Verified with `.venv/bin/python -m pytest tests/live/test_live_config.py tests/live/test_trailing_runtime.py -q` and `.venv/bin/python -m pytest tests`.
+
+### 2026-07-08 - SAFETY-4 Entry Lifecycle Minimal State Machine
+- **Status**: Completed
+- **Zone**: Execution
+- **Description**: Hardening strategy entry lifecycle so `status=open` is only written after exchange position confirmation and protective stop creation.
+- **Handoff**: None
+- **Notes**: User confirmed existing mixed worktree changes belong to other windows and may be treated as current baseline. Real order entry now confirms same symbol/side exchange position before creating a local trade, stores stop-failure fills as `entry_unprotected`, and promotes them to `open` only after reconcile creates a protective stop. Verified with `.venv/bin/python -m pytest tests/live/test_trailing_runtime.py tests/live/test_state_store.py -q` and `.venv/bin/python -m pytest tests`.
+
+### 2026-07-08 - Special State Terminal Marker
+- **Status**: Completed
+- **Zone**: Execution
+- **Description**: Adding a simple terminal marker to every managed-position poll while adverse-slope TP special state is active.
+- **Handoff**: None
+- **Notes**: Managed-position output now prefixes the existing status/stop-update line with `[SPECIAL]` while `adverse_slope_tp_active` is true. No strategy, TP trigger, stop, sizing, or persistence behavior changed. Verified with `.venv/bin/python -m pytest tests/live/test_live_run.py -q`.
+
+### 2026-07-08 - SAFETY-3 Close Lifecycle Verification
+- **Status**: Completed
+- **Zone**: Execution
+- **Description**: Hardening adverse-slope TP close cleanup so local stop cancellation and archive only happen after the exchange confirms the same symbol/side position is zero.
+- **Handoff**: None
+- **Notes**: `maybe_close_adverse_slope_take_profit()` now submits the reduce-only market close, fetches exchange positions, and only cancels the system stop/archives after the same symbol+side position is absent or zero. If the same side remains, local `qty` is updated and `_replace_stop()` keeps protection; close/fetch failures keep the trade open. Verified with `.venv/bin/python -m pytest tests/live/test_trailing_runtime.py tests/live/test_live_run.py -q`.
+
+### 2026-07-08 - Acceptance Scope For User Manual Edits
+- **Status**: Completed
+- **Zone**: General
+- **Description**: Recorded a project-local acceptance rule for user-declared manual config or strategy edits.
+- **Handoff**: None
+- **Notes**: When the user explicitly says a specific config or strategy change was manually made by them and is outside the current execution scope, Acceptance Zone should treat it as user-owned and not fail on that point alone unless the user asks to include manual edits in scope.
+
+### 2026-07-08 - SAFETY-2 Protective Stop Replacement Fail-Safe
+- **Status**: Completed
+- **Zone**: Execution
+- **Description**: Hardening protective stop replacement so local state is not marked safe when a new reduce-only stop fails, and strategy entries are blocked after a replacement safety failure.
+- **Handoff**: None
+- **Notes**: `_replace_stop()` now creates the new reduce-only stop and validates a real order id before cancelling the old system stop; missing/`None` ids and create failures append `protective_stop_failed`, keep local stop state unchanged, and set a runtime emergency flag that blocks later strategy entries. Also stopped touching exchange stops when `allow_orders` is false. Verified with `.venv/bin/python -m pytest tests/live/test_trailing_runtime.py tests/live/test_live_run.py -q`. No full entry lifecycle state machine, stop formula change, TP close verification, sizing change, or mainnet unlock.
+
+### 2026-07-08 - SAFETY-1 Live Stop Completed Candle And Runner Lock
+- **Status**: Completed
+- **Zone**: Execution
+- **Description**: Fixing two live execution safety issues: managed stop updates must use latest completed 1h candles, and live runner startup must reject a second simultaneous instance.
+- **Handoff**: None
+- **Notes**: Managed-position stop updates now require both latest completed `1h` and latest completed `5m` rows; otherwise the runner prints the normal waiting status and skips stop update for the poll. Added a stdlib `fcntl.flock` single-instance lock in the live storage directory so a second runner fails before client/runtime startup. Verified with `.venv/bin/python -m pytest tests/live/test_live_run.py tests/live/test_trailing_runtime.py -q`. No changes to entry strategy, sizing, TP/stop formulas, mainnet gate, stop replacement state machine, or manual position handling.
+
 ### 2026-07-08 - Adjust Live Entry Sizing For Adverse Slope
 - **Status**: Completed
 - **Zone**: Execution

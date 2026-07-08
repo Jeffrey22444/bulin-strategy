@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 
 from bbmr.live.config import load_live_config
-from bbmr.live.hyperliquid_client import ExchangePosition
+from bbmr.live.hyperliquid_client import ExchangePosition, LiveBalance, MarketQuote
 from bbmr.live.state_store import LiveStateStore
 from bbmr.live.trailing_runtime import LiveRuntime, latest_completed_features, live_updated_stop
 from bbmr.trailing import Setup
@@ -18,6 +18,8 @@ class FakeExchange:
         self.entries = []
         self.closes = []
         self.leverage_calls = []
+        self.positions = []
+        self.market_quote = MarketQuote(104.9, 105.1, 105)
 
     def create_reduce_only_stop(self, symbol, side, qty, stop_price):
         order = {"id": f"stop-{len(self.stop_orders) + 1}", "symbol": symbol, "side": side, "qty": qty, "stop": stop_price}
@@ -42,10 +44,13 @@ class FakeExchange:
         return round(qty, 8)
 
     def fetch_positions(self):
-        return []
+        return self.positions
 
     def fetch_open_orders(self, symbol):
         return []
+
+    def fetch_market_quote(self, symbol):
+        return self.market_quote
 
 
 class ClockedExchange(FakeExchange):
@@ -55,6 +60,17 @@ class ClockedExchange(FakeExchange):
 
     def now(self):
         return self._now
+
+
+class ConfirmingEntryExchange(ClockedExchange):
+    def __init__(self, now, entry_price=105):
+        super().__init__(now)
+        self.entry_price = entry_price
+
+    def create_market_entry(self, symbol, side, qty):
+        order = super().create_market_entry(symbol, side, qty)
+        self.positions = [ExchangePosition(symbol, side, qty, self.entry_price, self.entry_price)]
+        return order
 
 
 class OrderNotFound(Exception):
@@ -76,9 +92,47 @@ class FailingPnlExchange(FakeExchange):
         raise RuntimeError("trade history unavailable")
 
 
+class FailingStopExchange(FakeExchange):
+    def create_reduce_only_stop(self, symbol, side, qty, stop_price):
+        raise RuntimeError("stop create failed")
+
+
+class MissingStopIdExchange(FakeExchange):
+    def create_reduce_only_stop(self, symbol, side, qty, stop_price):
+        order = {"id": None, "symbol": symbol, "side": side, "qty": qty, "stop": stop_price}
+        self.stop_orders.append(order)
+        return order
+
+
+class FailingLeverageExchange(ClockedExchange):
+    def set_leverage(self, symbol, leverage, margin_mode):
+        raise RuntimeError("leverage failed")
+
+
+class FailingEntryExchange(ClockedExchange):
+    def create_market_entry(self, symbol, side, qty):
+        raise RuntimeError("entry failed")
+
+
+class EntryStopFailExchange(ConfirmingEntryExchange):
+    def create_reduce_only_stop(self, symbol, side, qty, stop_price):
+        raise RuntimeError("entry stop failed")
+
+
+class FailingCloseExchange(FakeExchange):
+    def close_position_market(self, symbol, side, qty):
+        raise RuntimeError("close failed")
+
+
+class FailingFetchPositionsExchange(FakeExchange):
+    def fetch_positions(self):
+        raise RuntimeError("positions unavailable")
+
+
 class AverageFillExchange(ClockedExchange):
     def create_market_entry(self, symbol, side, qty):
         self.entries.append((symbol, side, qty))
+        self.positions = [ExchangePosition(symbol, side, qty, 110, 110)]
         return {"id": "entry-1", "filled": qty, "average": 110}
 
 
@@ -225,7 +279,8 @@ def test_latest_completed_features_uses_rsi_warmup_bars(tmp_path):
 
 
 def test_live_strategy_ignores_old_v3_2_filter_columns(tmp_path):
-    runtime, exchange = _runtime(tmp_path)
+    exchange = ConfirmingEntryExchange("2030-01-01 09:35Z")
+    runtime = _runtime_with_exchange(tmp_path, exchange)
     events = runtime.maybe_open_strategy_trade("BTC", *_long_features_with_old_filter_columns(), 10000, True)
     expected_qty = runtime.entry_notional(10000) / 105
     assert exchange.leverage_calls == [("BTC", 3, "cross")]
@@ -234,7 +289,7 @@ def test_live_strategy_ignores_old_v3_2_filter_columns(tmp_path):
 
 
 def test_strategy_entry_uses_adverse_slope_leverage_when_active(tmp_path):
-    runtime = _runtime_with_exchange(tmp_path, ClockedExchange("2030-01-01 09:35Z"))
+    runtime = _runtime_with_exchange(tmp_path, ConfirmingEntryExchange("2030-01-01 09:35Z"))
 
     events = runtime.maybe_open_strategy_trade("SOL", *_adverse_long_features(), 10000, True)
 
@@ -242,6 +297,117 @@ def test_strategy_entry_uses_adverse_slope_leverage_when_active(tmp_path):
     assert runtime.exchange.leverage_calls == [("SOL", 2, "cross")]
     assert runtime.exchange.entries == [("SOL", "long", round(expected_qty, 8))]
     assert any("entry opened" in event for event in events)
+
+
+def test_strategy_entry_blocks_when_global_notional_cap_exceeded(tmp_path):
+    runtime = _runtime_with_exchange(tmp_path, ConfirmingEntryExchange("2030-01-01 09:35Z"))
+    positions = [ExchangePosition("ETH", "long", 10, 500, 600)]
+
+    events = runtime.maybe_open_strategy_trade("BTC", *_future_long_features(close_5m=105), 10000, True, exchange_positions=positions)
+
+    assert events[-1] == "BTC risk cap exceeded; waiting"
+    assert runtime.exchange.leverage_calls == []
+    assert runtime.exchange.entries == []
+    assert runtime.store.open_trade(runtime.position_key("BTC", "long")) is None
+    assert "BTC" in runtime.setups
+    assert runtime.store.events()[-1]["event_type"] == "setup_created"
+
+
+def test_strategy_entry_allows_notional_equal_to_global_cap(tmp_path):
+    runtime = _runtime_with_exchange(tmp_path, ConfirmingEntryExchange("2030-01-01 09:35Z"))
+    positions = [ExchangePosition("ETH", "long", 10, 550, 0)]
+
+    events = runtime.maybe_open_strategy_trade("BTC", *_future_long_features(close_5m=105), 10000, True, exchange_positions=positions)
+
+    assert runtime.exchange.leverage_calls == [("BTC", 3, "cross")]
+    assert any("entry opened" in event for event in events)
+
+
+def test_strategy_entry_blocks_when_equity_invalid(tmp_path):
+    runtime = _runtime_with_exchange(tmp_path, ConfirmingEntryExchange("2030-01-01 09:35Z"))
+
+    events = runtime.maybe_open_strategy_trade("BTC", *_future_long_features(close_5m=105), LiveBalance(0, 1000), True)
+
+    assert events[-1] == "BTC account equity invalid; waiting"
+    assert runtime.exchange.leverage_calls == []
+    assert runtime.exchange.entries == []
+    assert runtime.store.open_trade(runtime.position_key("BTC", "long")) is None
+    assert "BTC" in runtime.setups
+    assert runtime.store.events()[-1]["event_type"] == "setup_created"
+
+
+def test_strategy_entry_blocks_when_available_margin_insufficient(tmp_path):
+    runtime = _runtime_with_exchange(tmp_path, ConfirmingEntryExchange("2030-01-01 09:35Z"))
+
+    events = runtime.maybe_open_strategy_trade("BTC", *_future_long_features(close_5m=105), LiveBalance(10000, 1000), True)
+
+    assert events[-1] == "BTC available margin insufficient; waiting"
+    assert runtime.exchange.leverage_calls == []
+    assert runtime.exchange.entries == []
+    assert runtime.store.open_trade(runtime.position_key("BTC", "long")) is None
+    assert "BTC" in runtime.setups
+    assert runtime.store.events()[-1]["event_type"] == "setup_created"
+
+
+def test_strategy_entry_allows_when_available_margin_is_sufficient(tmp_path):
+    runtime = _runtime_with_exchange(tmp_path, ConfirmingEntryExchange("2030-01-01 09:35Z"))
+
+    events = runtime.maybe_open_strategy_trade("BTC", *_future_long_features(close_5m=105), LiveBalance(10000, 1500), True)
+
+    assert runtime.exchange.leverage_calls == [("BTC", 3, "cross")]
+    assert any("entry opened" in event for event in events)
+
+
+def test_strategy_entry_blocks_when_market_quote_missing(tmp_path):
+    exchange = ConfirmingEntryExchange("2030-01-01 09:35Z")
+    exchange.market_quote = MarketQuote(None, 105.1, 105)
+    runtime = _runtime_with_exchange(tmp_path, exchange)
+
+    events = runtime.maybe_open_strategy_trade("BTC", *_future_long_features(close_5m=105), LiveBalance(10000, 1500), True)
+
+    assert events[-1] == "BTC market quote unavailable; waiting"
+    assert exchange.leverage_calls == []
+    assert exchange.entries == []
+    assert runtime.store.open_trade(runtime.position_key("BTC", "long")) is None
+    assert "BTC" in runtime.setups
+    assert runtime.store.events()[-1]["event_type"] == "setup_created"
+
+
+def test_strategy_entry_blocks_when_market_spread_too_wide(tmp_path):
+    exchange = ConfirmingEntryExchange("2030-01-01 09:35Z")
+    exchange.market_quote = MarketQuote(100, 102, 101)
+    runtime = _runtime_with_exchange(tmp_path, exchange)
+
+    events = runtime.maybe_open_strategy_trade("BTC", *_future_long_features(close_5m=105), LiveBalance(10000, 1500), True)
+
+    assert "market spread too wide" in events[-1]
+    assert exchange.leverage_calls == []
+    assert exchange.entries == []
+    assert runtime.store.open_trade(runtime.position_key("BTC", "long")) is None
+    assert "BTC" in runtime.setups
+    assert runtime.store.events()[-1]["event_type"] == "setup_created"
+
+
+def test_entry_fill_slippage_is_recorded_without_leaving_position_unprotected(tmp_path):
+    exchange = AverageFillExchange("2030-01-01 09:35Z")
+    exchange.market_quote = MarketQuote(104.9, 105.1, 105)
+    runtime = _runtime_with_exchange(tmp_path, exchange)
+
+    events = runtime.maybe_open_strategy_trade("BTC", *_future_long_features(close_5m=105), LiveBalance(10000, 1500), True)
+
+    trade = runtime.store.open_trade(runtime.position_key("BTC", "long"))
+    event_types = [row["event_type"] for row in runtime.store.events()]
+    slippage_event = next(row for row in runtime.store.events() if row["event_type"] == "entry_slippage_exceeded")
+    assert any("entry fill slippage exceeded" in event for event in events)
+    assert trade.status == "open"
+    assert trade.system_stop_order_id == "stop-1"
+    assert event_types[-2:] == ["entry_slippage_exceeded", "entry_opened"]
+    assert json.loads(slippage_event["payload_json"]) == {
+        "fill_price": 110.0,
+        "max_entry_slippage_bps": 100.0,
+        "reference_price": 105.0,
+        "slippage_bps": pytest.approx(476.19047619047615),
+    }
 
 
 def test_entry_leverage_uses_setup_side_adverse_slope(tmp_path):
@@ -364,6 +530,78 @@ def test_market_entry_average_updates_entry_and_stop(tmp_path):
     assert runtime.exchange.stop_orders[-1]["stop"] == pytest.approx(104.5)
 
 
+def test_set_leverage_failure_does_not_create_open_trade_or_clear_setup(tmp_path):
+    runtime = _runtime_with_exchange(tmp_path, FailingLeverageExchange("2030-01-01 09:35Z"))
+
+    events = runtime.maybe_open_strategy_trade("BTC", *_future_long_features(close_5m=105), 10000, True)
+
+    assert "entry order not confirmed" in events[-1]
+    assert runtime.store.open_trade(runtime.position_key("BTC", "long")) is None
+    assert "BTC" in runtime.setups
+    assert runtime.store.connection.execute("SELECT COUNT(*) AS count FROM live_pending_setups").fetchone()["count"] == 1
+    assert [row["event_type"] for row in runtime.store.events()] == ["setup_created"]
+
+
+def test_market_entry_failure_without_position_does_not_create_open_trade(tmp_path):
+    runtime = _runtime_with_exchange(tmp_path, FailingEntryExchange("2030-01-01 09:35Z"))
+
+    events = runtime.maybe_open_strategy_trade("BTC", *_future_long_features(close_5m=105), 10000, True)
+
+    assert "entry order not confirmed" in events[-1]
+    assert runtime.store.open_trade(runtime.position_key("BTC", "long")) is None
+    assert "BTC" in runtime.setups
+    assert runtime.store.events()[-1]["event_type"] == "setup_created"
+
+
+def test_market_entry_without_confirmed_position_does_not_create_open_trade(tmp_path):
+    runtime = _runtime_with_exchange(tmp_path, ClockedExchange("2030-01-01 09:35Z"))
+
+    events = runtime.maybe_open_strategy_trade("BTC", *_future_long_features(close_5m=105), 10000, True)
+
+    assert "entry order not confirmed" in events[-1]
+    assert runtime.store.open_trade(runtime.position_key("BTC", "long")) is None
+    assert "BTC" in runtime.setups
+    assert runtime.store.events()[-1]["event_type"] == "setup_created"
+
+
+def test_market_entry_filled_but_stop_failure_keeps_unprotected_record(tmp_path):
+    runtime = _runtime_with_exchange(tmp_path, EntryStopFailExchange("2030-01-01 09:35Z"))
+
+    events = runtime.maybe_open_strategy_trade("BTC", *_future_long_features(close_5m=105), 10000, True)
+
+    trade = runtime.store.open_trade(runtime.position_key("BTC", "long"))
+    assert "entry filled but protective stop failed" in events[-1]
+    assert trade.status == "entry_unprotected"
+    assert trade.system_stop_order_id is None
+    assert "BTC" in runtime.setups
+    assert [row["event_type"] for row in runtime.store.events()][-2:] == ["protective_stop_failed", "entry_unprotected"]
+
+
+def test_reconcile_protects_unprotected_entry_before_open_management(tmp_path):
+    runtime, exchange = _runtime(tmp_path)
+    trade = runtime.store.create_trade(
+        runtime.position_key("BTC", "long"),
+        "BTC",
+        "long",
+        1,
+        105,
+        "strategy",
+        99.75,
+        setup_trigger_time=pd.Timestamp("2030-01-01 08:00Z"),
+        status="entry_unprotected",
+    )
+
+    events = runtime.reconcile_symbol("BTC", [ExchangePosition("BTC", "long", 1, 105, 105)], True)
+
+    loaded = runtime.store.open_trade(runtime.position_key("BTC", "long"))
+    assert loaded.internal_trade_id == trade.internal_trade_id
+    assert loaded.status == "open"
+    assert loaded.system_stop_order_id == "stop-1"
+    assert exchange.stop_orders[-1]["qty"] == 1
+    assert "entry protected" in events[0]
+    assert runtime.store.events()[-1]["event_type"] == "entry_opened"
+
+
 def test_strategy_entry_skips_when_exchange_position_exists(tmp_path):
     runtime = _runtime_with_exchange(tmp_path, ExistingPositionExchange("2030-01-01 09:35Z"))
 
@@ -392,6 +630,18 @@ def test_manual_position_is_adopted_and_stop_is_created(tmp_path):
     assert trade.qty == 1
     assert exchange.stop_orders[-1]["qty"] == 1
     assert "manual position detected" in events[0]
+
+
+def test_manual_position_adoption_can_be_disabled(tmp_path):
+    runtime, exchange = _runtime(tmp_path)
+    runtime.live_config.execution.adopt_manual_positions = False
+
+    events = runtime.reconcile_symbol("BTC", [ExchangePosition("BTC", "long", 1, 100, 101)], True)
+
+    assert events == ["BTC manual position detected; adoption disabled"]
+    assert runtime.store.open_trade(runtime.position_key("BTC", "long")) is None
+    assert exchange.stop_orders == []
+    assert runtime.store.events() == []
 
 
 def test_trade_journal_records_state_changes_and_appends(tmp_path):
@@ -481,6 +731,85 @@ def test_manual_addon_updates_merged_quantity(tmp_path):
     assert exchange.stop_orders[-1]["qty"] == 2
 
 
+def test_manual_addon_management_can_be_disabled(tmp_path):
+    runtime, exchange = _runtime(tmp_path)
+    trade = runtime.store.create_trade(runtime.position_key("BTC", "long"), "BTC", "long", 1, 100, "strategy", 95)
+    trade.system_stop_order_id = "stop-1"
+    runtime.store.update_trade(trade)
+    runtime.live_config.execution.manage_full_manual_added_size = False
+
+    events = runtime.reconcile_symbol("BTC", [ExchangePosition("BTC", "long", 2, 98, 101)], True)
+
+    loaded = runtime.store.open_trade(runtime.position_key("BTC", "long"))
+    assert events == ["BTC manual size change ignored; management disabled"]
+    assert loaded.qty == 1
+    assert loaded.entry_price == 100
+    assert loaded.internal_trade_id == trade.internal_trade_id
+    assert exchange.stop_orders == []
+    assert runtime.store.events() == []
+
+
+def test_unprotected_strategy_entry_recovery_ignores_manual_adoption_setting(tmp_path):
+    runtime, exchange = _runtime(tmp_path)
+    runtime.live_config.execution.adopt_manual_positions = False
+    runtime.store.create_trade(
+        runtime.position_key("BTC", "long"),
+        "BTC",
+        "long",
+        1,
+        105,
+        "strategy",
+        99.75,
+        setup_trigger_time=pd.Timestamp("2030-01-01 08:00Z"),
+        status="entry_unprotected",
+    )
+
+    events = runtime.reconcile_symbol("BTC", [ExchangePosition("BTC", "long", 1, 105, 105)], True)
+
+    loaded = runtime.store.open_trade(runtime.position_key("BTC", "long"))
+    assert "entry protected" in events[0]
+    assert loaded.status == "open"
+    assert loaded.system_stop_order_id == "stop-1"
+    assert exchange.stop_orders[-1]["qty"] == 1
+
+
+def test_stop_replacement_failure_keeps_old_stop_and_blocks_new_entries(tmp_path):
+    runtime = _runtime_with_exchange(tmp_path, FailingStopExchange())
+    trade = runtime.store.create_trade(runtime.position_key("BTC", "long"), "BTC", "long", 1, 100, "strategy", 95)
+    trade.system_stop_order_id = "old-stop"
+    runtime.store.update_trade(trade)
+
+    event = runtime.update_stop(trade, pd.Series({"lb": 80, "mb": 120, "ub": 160}), pd.Series({"close": 130, "high": 140, "low": 125}), True)
+
+    loaded = runtime.store.open_trade(runtime.position_key("BTC", "long"))
+    assert "protective stop replacement failed" in event
+    assert loaded.current_stop_loss == 95
+    assert loaded.system_stop_order_id == "old-stop"
+    assert runtime.exchange.cancelled == []
+    assert runtime.store.events()[-1]["event_type"] == "protective_stop_failed"
+    assert "stop create failed" in runtime.emergency_protect_reason
+
+    events = runtime.maybe_open_strategy_trade("SOL", *_future_long_features(close_5m=105), 10000, True)
+
+    assert events == [f"SOL strategy entry blocked: {runtime.emergency_protect_reason}"]
+    assert runtime.exchange.entries == []
+
+
+def test_stop_replacement_missing_id_does_not_write_string_none(tmp_path):
+    runtime = _runtime_with_exchange(tmp_path, MissingStopIdExchange())
+    trade = runtime.store.create_trade(runtime.position_key("BTC", "long"), "BTC", "long", 1, 100, "strategy", 95)
+    trade.system_stop_order_id = "old-stop"
+    runtime.store.update_trade(trade)
+
+    event = runtime.update_stop(trade, pd.Series({"lb": 80, "mb": 120, "ub": 160}), pd.Series({"close": 130, "high": 140, "low": 125}), True)
+
+    loaded = runtime.store.open_trade(runtime.position_key("BTC", "long"))
+    assert "protective stop replacement failed" in event
+    assert loaded.system_stop_order_id == "old-stop"
+    assert loaded.system_stop_order_id != "None"
+    assert runtime.exchange.cancelled == []
+
+
 def test_adverse_slope_take_profit_long_active_and_inactive(tmp_path):
     runtime = _runtime_with_exchange(tmp_path, ClockedExchange("2030-01-01 12:05Z"))
     trade = runtime.store.create_trade(runtime.position_key("BTC", "long"), "BTC", "long", 1, 100, "strategy", 95)
@@ -540,6 +869,7 @@ def test_adverse_slope_take_profit_closes_when_triggered(tmp_path):
     trade.adverse_slope_tp_active = True
     trade.adverse_slope_tp_price = 120
     runtime.store.update_trade(trade)
+    exchange.positions = [ExchangePosition("BTC", "short", 2, 100, 99), ExchangePosition("ETH", "long", 1, 100, 101)]
 
     event = runtime.maybe_close_adverse_slope_take_profit(trade, 121, True)
 
@@ -547,6 +877,55 @@ def test_adverse_slope_take_profit_closes_when_triggered(tmp_path):
     assert exchange.closes == [("BTC", "long", 1)]
     assert exchange.cancelled == [("BTC", "stop-1")]
     assert runtime.store.open_trade(runtime.position_key("BTC", "long")) is None
+
+
+def test_adverse_slope_take_profit_keeps_trade_open_until_position_zero(tmp_path):
+    runtime, exchange = _runtime(tmp_path)
+    trade = runtime.store.create_trade(runtime.position_key("BTC", "long"), "BTC", "long", 1, 100, "strategy", 95)
+    trade.system_stop_order_id = "stop-1"
+    trade.adverse_slope_tp_active = True
+    trade.adverse_slope_tp_price = 120
+    runtime.store.update_trade(trade)
+    exchange.positions = [ExchangePosition("BTC", "long", 0.25, 100, 121)]
+
+    event = runtime.maybe_close_adverse_slope_take_profit(trade, 121, True)
+
+    loaded = runtime.store.open_trade(runtime.position_key("BTC", "long"))
+    assert "partially closed" in event
+    assert loaded.qty == 0.25
+    assert loaded.status == "open"
+    assert exchange.stop_orders[-1]["qty"] == 0.25
+    assert exchange.cancelled == [("BTC", "stop-1")]
+
+
+def test_adverse_slope_take_profit_close_error_keeps_trade_open(tmp_path):
+    runtime = _runtime_with_exchange(tmp_path, FailingCloseExchange())
+    trade = runtime.store.create_trade(runtime.position_key("BTC", "long"), "BTC", "long", 1, 100, "strategy", 95)
+    trade.system_stop_order_id = "stop-1"
+    trade.adverse_slope_tp_active = True
+    trade.adverse_slope_tp_price = 120
+    runtime.store.update_trade(trade)
+
+    event = runtime.maybe_close_adverse_slope_take_profit(trade, 121, True)
+
+    assert "close verification failed" in event
+    assert runtime.store.open_trade(runtime.position_key("BTC", "long")) is not None
+    assert runtime.exchange.cancelled == []
+
+
+def test_adverse_slope_take_profit_fetch_positions_error_keeps_trade_open(tmp_path):
+    runtime = _runtime_with_exchange(tmp_path, FailingFetchPositionsExchange())
+    trade = runtime.store.create_trade(runtime.position_key("BTC", "long"), "BTC", "long", 1, 100, "strategy", 95)
+    trade.system_stop_order_id = "stop-1"
+    trade.adverse_slope_tp_active = True
+    trade.adverse_slope_tp_price = 120
+    runtime.store.update_trade(trade)
+
+    event = runtime.maybe_close_adverse_slope_take_profit(trade, 121, True)
+
+    assert "close verification failed" in event
+    assert runtime.store.open_trade(runtime.position_key("BTC", "long")) is not None
+    assert runtime.exchange.cancelled == []
 
 
 def test_adverse_slope_take_profit_inactive_does_not_close(tmp_path):

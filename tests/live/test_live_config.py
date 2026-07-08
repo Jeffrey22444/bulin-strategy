@@ -23,8 +23,13 @@ def test_live_config_loads_trailing_strategy():
     assert config.execution.idle_candle_grace_seconds == 10
     assert config.execution.idle_position_guard_seconds == 30
     assert config.execution.margin_fraction == 0.15
+    assert config.execution.max_total_notional_fraction == 1.0
+    assert config.execution.max_market_spread_bps == 50.0
+    assert config.execution.max_entry_slippage_bps == 100.0
     assert config.execution.leverage == 3
     assert config.execution.adverse_slope_leverage == 2
+    assert config.execution.adopt_manual_positions is True
+    assert config.execution.manage_full_manual_added_size is True
 
 
 def test_old_strategy_config_is_rejected():
@@ -62,6 +67,38 @@ def test_leverage_fields_are_validated():
     data["execution"]["adverse_slope_leverage"] = 0
     with pytest.raises(ValidationError):
         LiveConfig.model_validate(data)
+
+
+@pytest.mark.parametrize("fraction", [0, -0.1])
+def test_max_total_notional_fraction_must_be_positive(fraction):
+    data = _data()
+    data["execution"]["max_total_notional_fraction"] = fraction
+    with pytest.raises(ValidationError):
+        LiveConfig.model_validate(data)
+
+
+def test_max_total_notional_fraction_defaults_to_one_for_old_configs():
+    data = _data()
+    data["execution"].pop("max_total_notional_fraction")
+    assert LiveConfig.model_validate(data).execution.max_total_notional_fraction == 1.0
+
+
+@pytest.mark.parametrize("field", ["max_market_spread_bps", "max_entry_slippage_bps"])
+@pytest.mark.parametrize("value", [0, -1])
+def test_execution_quality_bps_fields_must_be_positive(field, value):
+    data = _data()
+    data["execution"][field] = value
+    with pytest.raises(ValidationError):
+        LiveConfig.model_validate(data)
+
+
+def test_execution_quality_bps_fields_default_for_old_configs():
+    data = _data()
+    data["execution"].pop("max_market_spread_bps")
+    data["execution"].pop("max_entry_slippage_bps")
+    config = LiveConfig.model_validate(data)
+    assert config.execution.max_market_spread_bps == 50.0
+    assert config.execution.max_entry_slippage_bps == 100.0
 
 
 def test_mainnet_requires_config_allowance():

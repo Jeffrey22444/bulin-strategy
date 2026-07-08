@@ -134,6 +134,7 @@ class LiveStateStore:
         setup_trigger_time=None,
         setup_rsi_15m: float | None = None,
         confirm_15m_time=None,
+        status: str = "open",
     ) -> LiveTrade:
         trade = LiveTrade(
             str(uuid.uuid4()),
@@ -143,7 +144,7 @@ class LiveStateStore:
             qty,
             entry_price,
             source,
-            "open",
+            status,
             initial_stop_loss,
             initial_stop_loss,
             entry_time=_timestamp(entry_time),
@@ -188,7 +189,7 @@ class LiveStateStore:
 
     def open_trade(self, exchange_position_key: str) -> LiveTrade | None:
         row = self.connection.execute(
-            "SELECT * FROM live_trades WHERE exchange_position_key = ? AND status = 'open'",
+            "SELECT * FROM live_trades WHERE exchange_position_key = ? AND status IN ('open', 'entry_unprotected')",
             (exchange_position_key,),
         ).fetchone()
         return _trade(row) if row else None
@@ -197,13 +198,14 @@ class LiveStateStore:
         self.connection.execute(
             """
             UPDATE live_trades
-            SET qty = ?, entry_price = ?, initial_stop_loss = ?, current_stop_loss = ?, system_stop_order_id = ?, pnl_source = ?,
+            SET qty = ?, entry_price = ?, status = ?, initial_stop_loss = ?, current_stop_loss = ?, system_stop_order_id = ?, pnl_source = ?,
                 trailing_stage = ?, midband_follow_bucket_start = ?, adverse_slope_tp_active = ?, adverse_slope_tp_bucket_start = ?, adverse_slope_tp_price = ?
             WHERE internal_trade_id = ?
             """,
             (
                 trade.qty,
                 trade.entry_price,
+                trade.status,
                 trade.initial_stop_loss,
                 trade.current_stop_loss,
                 trade.system_stop_order_id,

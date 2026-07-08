@@ -8,6 +8,7 @@ from bbmr.live.hyperliquid_client import ExchangePosition
 from bbmr.live.env import load_project_env
 from bbmr.live.run import (
     _light_guard_detects_active_state,
+    _live_runner_lock,
     _next_1h_wake_time,
     _next_poll_time_after_full_poll,
     _next_sleep_seconds,
@@ -87,6 +88,17 @@ def test_live_run_once_still_full_polls_immediately(tmp_path, monkeypatch):
 
     assert main(["--live-config", str(config_path), "--once"]) == 0
     assert calls == ["full"]
+
+
+def test_live_run_rejects_second_instance(tmp_path, monkeypatch):
+    config_path = _live_config_path(tmp_path)
+
+    monkeypatch.setattr("bbmr.live.run.load_project_env", lambda: None)
+    monkeypatch.setattr("bbmr.live.run.missing_credential_names", lambda config: [])
+
+    with _live_runner_lock(str(tmp_path / "live.sqlite3")):
+        with pytest.raises(RuntimeError, match="live runner already running"):
+            main(["--live-config", str(config_path), "--once"])
 
 
 @pytest.mark.parametrize("timeout_at", ["balance", "positions"])
@@ -261,6 +273,51 @@ def test_poll_once_updates_existing_managed_trade_and_prints_observability(tmp_p
     assert "2026-01-01 17:15:00+08:00" in output
 
 
+def test_poll_once_updates_stop_from_completed_1h_not_forming_1h(tmp_path, monkeypatch):
+    config = _live_config(tmp_path)
+    exchange = _Exchange()
+    runtime = LiveRuntime(config, exchange, LiveStateStore(config.storage.sqlite_path))
+    runtime.store.create_trade(runtime.position_key("BTC", "long"), "BTC", "long", 1, 100, "strategy", 95)
+    monkeypatch.setattr("bbmr.live.run.latest_completed_features", lambda client, symbol, strategy_config: _features_with_forming_1h())
+
+    _poll_once(runtime, _Client(), ["BTC"], cli_allow_testnet_orders=False, dry_run=True)
+
+    updated = runtime.store.open_trade(runtime.position_key("BTC", "long"))
+    assert updated.current_stop_loss == 120
+
+
+def test_poll_once_waits_when_completed_1h_is_missing(tmp_path, monkeypatch, capsys):
+    config = _live_config(tmp_path)
+    exchange = _Exchange()
+    runtime = LiveRuntime(config, exchange, LiveStateStore(config.storage.sqlite_path))
+    runtime.store.create_trade(runtime.position_key("BTC", "long"), "BTC", "long", 1, 100, "strategy", 95)
+    monkeypatch.setattr("bbmr.live.run.latest_completed_features", lambda client, symbol, strategy_config: _forming_1h_features())
+
+    _poll_once(runtime, _Client(), ["BTC"], cli_allow_testnet_orders=False, dry_run=True)
+
+    updated = runtime.store.open_trade(runtime.position_key("BTC", "long"))
+    output = capsys.readouterr().out
+    assert updated.current_stop_loss == 95
+    assert "BTC managed position; waiting for trailing-stop update" in output
+    assert "stop moved" not in output
+
+
+def test_poll_once_marks_special_adverse_slope_status(tmp_path, monkeypatch, capsys):
+    config = _live_config(tmp_path)
+    exchange = _Exchange()
+    runtime = LiveRuntime(config, exchange, LiveStateStore(config.storage.sqlite_path))
+    trade = runtime.store.create_trade(runtime.position_key("BTC", "long"), "BTC", "long", 1, 100, "strategy", 95)
+    trade.adverse_slope_tp_active = True
+    trade.adverse_slope_tp_price = 999
+    runtime.store.update_trade(trade)
+    monkeypatch.setattr("bbmr.live.run.latest_completed_features", lambda client, symbol, strategy_config: _forming_1h_features())
+
+    _poll_once(runtime, _Client(), ["BTC"], cli_allow_testnet_orders=False, dry_run=True)
+
+    output = capsys.readouterr().out
+    assert "[SPECIAL] BTC managed position; waiting for trailing-stop update" in output
+
+
 def test_poll_once_continues_when_stale_system_stop_cancel_is_missing(tmp_path, monkeypatch, capsys):
     config = _live_config(tmp_path)
     exchange = _MissingStopExchange()
@@ -317,6 +374,36 @@ def test_poll_once_reuses_fetched_positions_for_strategy_guard(tmp_path, monkeyp
     assert client.position_calls == 1
 
 
+def test_poll_once_passes_full_balance_to_strategy_entry(monkeypatch):
+    captured = {}
+
+    class Runtime:
+        strategy_config = object()
+
+        def can_place_orders(self, cli_allow_testnet_orders):
+            return False
+
+        def reconcile_symbol(self, symbol, positions, allow_orders, dry_run):
+            return []
+
+        def managed_trade(self, symbol):
+            return None
+
+        def maybe_open_strategy_trade(self, symbol, features_1h, features_15m, features_5m, balance, allow_orders, dry_run, exchange_positions=None):
+            captured["balance"] = balance
+            return []
+
+    class BalanceClient(_NoPositionClient):
+        def fetch_balance(self):
+            return SimpleNamespace(equity=10000, available=1234)
+
+    monkeypatch.setattr("bbmr.live.run.latest_completed_features", lambda client, symbol, strategy_config: _flat_features())
+
+    _poll_once(Runtime(), BalanceClient(), ["BTC"], cli_allow_testnet_orders=False, dry_run=True)
+
+    assert captured["balance"].available == 1234
+
+
 def _live_config(tmp_path):
     return main.__globals__["load_live_config"](_live_config_path(tmp_path))
 
@@ -342,6 +429,27 @@ def _features():
         [{"open": 100, "high": 140, "low": 125, "close": 130, "mb": 100}],
         index=[pd.Timestamp("2026-01-01 09:10", tz="UTC")],
     )
+    return one_h, fifteen_m, five_m
+
+
+def _features_with_forming_1h():
+    one_h = pd.DataFrame(
+        [
+            {"open": 100, "high": 121, "low": 90, "close": 95, "rsi14": 20, "lb": 80, "mb": 120, "ub": 160},
+            {"open": 100, "high": 151, "low": 90, "close": 145, "rsi14": 50, "lb": 80, "mb": 150, "ub": 180},
+        ],
+        index=[pd.Timestamp("2026-01-01 08:00", tz="UTC"), pd.Timestamp("2026-01-01 09:00", tz="UTC")],
+    )
+    _, fifteen_m, five_m = _features()
+    return one_h, fifteen_m, five_m
+
+
+def _forming_1h_features():
+    one_h = pd.DataFrame(
+        [{"open": 100, "high": 151, "low": 90, "close": 145, "rsi14": 50, "lb": 80, "mb": 150, "ub": 180}],
+        index=[pd.Timestamp("2026-01-01 09:00", tz="UTC")],
+    )
+    _, fifteen_m, five_m = _features()
     return one_h, fifteen_m, five_m
 
 
@@ -398,6 +506,9 @@ class _Client:
     def fetch_open_orders(self, symbol):
         self.open_order_calls.append(symbol)
         return []
+
+    def get_market_price(self, symbol):
+        return 130
 
     def fetch_ohlcv(self, symbol, timeframe, limit):
         self.ohlcv_calls += 1

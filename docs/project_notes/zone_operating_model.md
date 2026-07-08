@@ -126,6 +126,7 @@ Responsibilities:
 - Prioritize findings by severity with file/line references.
 - Decide pass or fail.
 - Answer user questions about code behavior, current strategy implementation, or design issues when the question is review/understanding oriented.
+- If the user explicitly marks a specific config or strategy diff as a manual user edit outside the execution scope, treat that diff as user-owned and do not fail acceptance on that point alone unless the user asks to include manual edits in scope.
 - If strategy changes become broad or ambiguous, route to Planning Zone.
 - Use the Acceptance Contract plus Execution evidence as the default review input for small and medium work, instead of requiring the full execution prompt every time.
 

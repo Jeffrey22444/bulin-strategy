@@ -22,6 +22,13 @@ class ExchangePosition:
     mark_price: float
 
 
+@dataclass
+class MarketQuote:
+    bid: float | None
+    ask: float | None
+    last: float | None
+
+
 class HyperliquidClient:
     def __init__(self, config, exchange=None):
         self.config = config
@@ -77,6 +84,14 @@ class HyperliquidClient:
 
     def get_market_price(self, symbol: str) -> float:
         return float(self.exchange.fetch_ticker(to_exchange_symbol(symbol))["last"])
+
+    def fetch_market_quote(self, symbol: str) -> MarketQuote:
+        ticker = self.exchange.fetch_ticker(to_exchange_symbol(symbol))
+        return MarketQuote(
+            bid=_optional_float(ticker.get("bid")),
+            ask=_optional_float(ticker.get("ask")),
+            last=_optional_float(ticker.get("last")),
+        )
 
     def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 100) -> pd.DataFrame:
         rows = self.exchange.fetch_ohlcv(to_exchange_symbol(symbol), timeframe, limit=limit)
@@ -172,6 +187,12 @@ def _first_float(item: dict, info: dict, names: tuple[str, ...]) -> float | None
         if value not in (None, ""):
             return float(value)
     return None
+
+
+def _optional_float(value) -> float | None:
+    if value in (None, ""):
+        return None
+    return float(value)
 
 
 def _fee(item: dict) -> float:

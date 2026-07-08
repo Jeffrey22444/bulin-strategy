@@ -34,7 +34,7 @@ class FakeExchange:
         ]
 
     def fetch_ticker(self, symbol):
-        return {"last": 123.45}
+        return {"bid": 123.40, "ask": 123.50, "last": 123.45}
 
     def fetch_my_trades(self, symbol, since=None, limit=None):
         self.last_my_trades = (symbol, since, limit)
@@ -87,6 +87,16 @@ def test_client_uses_market_price_for_market_orders():
     assert entry["price"] == 123.45
     assert close["price"] == 123.45
     assert close["params"] == {"reduceOnly": True}
+
+
+def test_client_fetches_market_quote_from_ticker():
+    client = HyperliquidClient(load_live_config("configs/live_hyperliquid_testnet.yaml"), FakeExchange())
+
+    quote = client.fetch_market_quote("BTC")
+
+    assert quote.bid == 123.40
+    assert quote.ask == 123.50
+    assert quote.last == 123.45
 
 
 def test_client_fetches_recent_realized_pnl_from_my_trades():

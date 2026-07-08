@@ -38,6 +38,9 @@ class LiveExchangeSection(StrictModel):
 class LiveExecutionSection(StrictModel):
     allow_testnet_orders: bool = False
     margin_fraction: float = Field(gt=0, lt=1)
+    max_total_notional_fraction: float = Field(default=1.0, gt=0)
+    max_market_spread_bps: float = Field(default=50.0, gt=0)
+    max_entry_slippage_bps: float = Field(default=100.0, gt=0)
     leverage: int = Field(ge=1)
     adverse_slope_leverage: int = Field(default=2, ge=1)
     allow_strategy_add: bool = False

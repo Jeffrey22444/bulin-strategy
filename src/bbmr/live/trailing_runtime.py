@@ -37,6 +37,7 @@ class LiveRuntime:
             else:
                 self._discard_pending_setup(pending_setup, discard_reason)
         self.pending: dict[str, Setup] = {}
+        self.emergency_protect_reason: str | None = None
 
     def position_key(self, symbol: str, side: str) -> str:
         return f"{self.account}:{self.live_config.exchange.env}:{from_exchange_symbol(symbol)}:{side}"
@@ -67,6 +68,9 @@ class LiveRuntime:
             open_local = None
 
         if open_local is None:
+            if not self.live_config.execution.adopt_manual_positions:
+                events.append(f"{symbol} manual position detected; adoption disabled")
+                return events
             stop = _initial_stop_loss(exchange_position.side, exchange_position.entry_price, self.strategy_config.trailing_stop.initial_stop_pct)
             trade = self.store.create_trade(key, exchange_position.symbol, exchange_position.side, exchange_position.qty, exchange_position.entry_price, "manual_adopted", stop)
             self._replace_stop(trade, allow_orders, dry_run)
@@ -74,7 +78,31 @@ class LiveRuntime:
             events.append(f"{symbol} manual position detected; adopted into trailing stop management")
             return events
 
+        if open_local.status == "entry_unprotected" or not open_local.system_stop_order_id:
+            was_unprotected_entry = open_local.status == "entry_unprotected"
+            open_local.qty = exchange_position.qty
+            open_local.entry_price = exchange_position.entry_price
+            open_local.initial_stop_loss = _initial_stop_loss(exchange_position.side, exchange_position.entry_price, self.strategy_config.trailing_stop.initial_stop_pct)
+            open_local.current_stop_loss = open_local.initial_stop_loss
+            try:
+                self._replace_stop(open_local, allow_orders, dry_run)
+            except StopReplacementError as exc:
+                self.store.update_trade(open_local)
+                events.append(f"{symbol} entry position found but protective stop missing: {exc}")
+                return events
+            open_local.status = "open"
+            self.store.update_trade(open_local)
+            if was_unprotected_entry and open_local.source == "strategy":
+                self.setups.pop(symbol, None)
+                self.store.delete_pending_setup(symbol)
+                self.store.append_event("entry_opened", symbol, trade=open_local, setup_trigger_time=open_local.setup_trigger_time, event_time=self._now())
+            events.append(f"{symbol} entry protected; managing open position")
+            return events
+
         if open_local.qty != exchange_position.qty or open_local.entry_price != exchange_position.entry_price:
+            if not self.live_config.execution.manage_full_manual_added_size:
+                events.append(f"{symbol} manual size change ignored; management disabled")
+                return events
             open_local.qty = exchange_position.qty
             open_local.entry_price = exchange_position.entry_price
             self._replace_stop(open_local, allow_orders, dry_run)
@@ -89,14 +117,19 @@ class LiveRuntime:
         features_1h: pd.DataFrame,
         features_15m: pd.DataFrame,
         features_5m: pd.DataFrame,
-        equity: float,
+        balance,
         allow_orders: bool,
         dry_run: bool = False,
         exchange_positions: list | None = None,
     ) -> list[str]:
         events: list[str] = []
+        if self.emergency_protect_reason:
+            events.append(f"{symbol} strategy entry blocked: {self.emergency_protect_reason}")
+            return events
         if self._open_local_for_symbol(symbol):
             return events
+        if exchange_positions is None:
+            exchange_positions = self.exchange.fetch_positions()
         if self._exchange_position_exists(symbol, exchange_positions):
             events.append(f"{symbol} exchange position exists; waiting")
             return events
@@ -150,36 +183,98 @@ class LiveRuntime:
         if not _entry_signal(setup, row_5m):
             return events
 
+        equity, available = _balance_values(balance)
+        if equity <= 0:
+            events.append(f"{symbol} account equity invalid; waiting")
+            return events
         entry_price = float(row_5m["close"])
         selected_leverage = self.entry_leverage(setup.side, features_1h)
         notional = self.entry_notional(equity, selected_leverage)
+        proposed_margin = notional / selected_leverage
+        if available < proposed_margin:
+            events.append(f"{symbol} available margin insufficient; waiting")
+            return events
+        max_notional = equity * self.live_config.execution.max_total_notional_fraction
+        existing_notional = _exchange_positions_notional(exchange_positions)
+        if existing_notional + notional > max_notional:
+            events.append(f"{symbol} risk cap exceeded; waiting")
+            return events
+        entry_reference_price = None
+        if allow_orders and not dry_run:
+            entry_reference_price, quote_error = self._entry_market_quality(symbol)
+            if quote_error:
+                events.append(f"{symbol} {quote_error}")
+                return events
         qty = notional / entry_price
         stop = _initial_stop_loss(setup.side, entry_price, self.strategy_config.trailing_stop.initial_stop_pct)
-        trade = self.store.create_trade(
-            self.position_key(symbol, setup.side),
-            symbol,
-            setup.side,
-            qty,
-            entry_price,
-            "strategy",
-            stop,
-            entry_time=close_time,
-            setup_trigger_time=setup.trigger_time,
-            setup_rsi_15m=setup.rsi_15m,
-            confirm_15m_time=setup.confirm_15m_time,
-        )
+        slippage_message = None
+        slippage_payload = None
         if allow_orders and not dry_run:
-            self.exchange.set_leverage(symbol, selected_leverage, self.live_config.exchange.margin_mode)
-            order = self.exchange.create_market_entry(symbol, setup.side, self.exchange.format_qty(symbol, qty))
-            if order.get("filled"):
-                trade.qty = float(order["filled"])
-            fill_price = _order_fill_price(order)
-            if fill_price is not None:
-                trade.entry_price = fill_price
-                trade.initial_stop_loss = _initial_stop_loss(setup.side, fill_price, self.strategy_config.trailing_stop.initial_stop_pct)
-                trade.current_stop_loss = trade.initial_stop_loss
-            self._replace_stop(trade, allow_orders, dry_run)
+            try:
+                self.exchange.set_leverage(symbol, selected_leverage, self.live_config.exchange.margin_mode)
+            except Exception as exc:
+                return events + [f"{symbol} entry order not confirmed; setup retained: {exc}"]
+            try:
+                order = self.exchange.create_market_entry(symbol, setup.side, self.exchange.format_qty(symbol, qty))
+                slippage_message, slippage_payload = self._entry_slippage_warning(symbol, entry_reference_price, _order_fill_price(order))
+                positions = self.exchange.fetch_positions()
+            except Exception as exc:
+                try:
+                    positions = self.exchange.fetch_positions()
+                except Exception:
+                    return events + [f"{symbol} entry order not confirmed; setup retained: {exc}"]
+            exchange_position = _matching_exchange_position(positions, symbol, setup.side)
+            if exchange_position is None or exchange_position.qty <= 0:
+                return events + [f"{symbol} entry order not confirmed; setup retained"]
+            entry_price = exchange_position.entry_price
+            qty = exchange_position.qty
+            stop = _initial_stop_loss(setup.side, entry_price, self.strategy_config.trailing_stop.initial_stop_pct)
+            trade = self.store.create_trade(
+                self.position_key(symbol, setup.side),
+                symbol,
+                setup.side,
+                qty,
+                entry_price,
+                "strategy",
+                stop,
+                entry_time=close_time,
+                setup_trigger_time=setup.trigger_time,
+                setup_rsi_15m=setup.rsi_15m,
+                confirm_15m_time=setup.confirm_15m_time,
+                status="entry_unprotected",
+            )
+            if slippage_message:
+                events.append(slippage_message)
+                self.store.append_event(
+                    "entry_slippage_exceeded",
+                    symbol,
+                    trade=trade,
+                    setup_trigger_time=setup.trigger_time,
+                    event_time=close_time,
+                    payload_json=json.dumps(slippage_payload, sort_keys=True),
+                )
+            try:
+                self._replace_stop(trade, allow_orders, dry_run)
+            except StopReplacementError as exc:
+                self.store.update_trade(trade)
+                self.store.append_event("entry_unprotected", symbol, trade=trade, setup_trigger_time=setup.trigger_time, event_time=close_time)
+                return events + [f"{symbol} entry filled but protective stop failed; local recovery record kept: {exc}"]
+            trade.status = "open"
             self.store.update_trade(trade)
+        else:
+            trade = self.store.create_trade(
+                self.position_key(symbol, setup.side),
+                symbol,
+                setup.side,
+                qty,
+                entry_price,
+                "strategy",
+                stop,
+                entry_time=close_time,
+                setup_trigger_time=setup.trigger_time,
+                setup_rsi_15m=setup.rsi_15m,
+                confirm_15m_time=setup.confirm_15m_time,
+            )
         self.update_adverse_slope_take_profit(trade, features_1h)
         events.append(f"{symbol} entry opened; notional={notional:.2f}, qty={qty:.8f}")
         self.setups.pop(symbol, None)
@@ -196,7 +291,14 @@ class LiveRuntime:
         old_stop = trade.current_stop_loss
         if new_stop != trade.current_stop_loss:
             trade.current_stop_loss = new_stop
-            self._replace_stop(trade, allow_orders, dry_run)
+            try:
+                self._replace_stop(trade, allow_orders, dry_run)
+            except StopReplacementError as exc:
+                trade.current_stop_loss = old_stop
+                trade.trailing_stage = old_stage
+                trade.midband_follow_bucket_start = old_bucket
+                self.store.update_trade(trade)
+                return f"{trade.symbol} protective stop replacement failed; new strategy entries blocked: {exc}"
         self.store.update_trade(trade)
         self.store.append_event("stop_updated", trade.symbol, trade=trade, event_time=self._now())
         if new_stop == old_stop:
@@ -240,7 +342,21 @@ class LiveRuntime:
             return None
         if not allow_orders or dry_run:
             return f"{trade.symbol} adverse slope TP triggered; close skipped"
-        self.exchange.close_position_market(trade.symbol, trade.side, self.exchange.format_qty(trade.symbol, trade.qty))
+        try:
+            self.exchange.close_position_market(trade.symbol, trade.side, self.exchange.format_qty(trade.symbol, trade.qty))
+            positions = self.exchange.fetch_positions()
+        except Exception as exc:
+            return f"{trade.symbol} adverse slope TP close verification failed; trade remains open: {exc}"
+        remaining = _matching_exchange_position(positions, trade.symbol, trade.side)
+        if remaining is not None and remaining.qty > 0:
+            trade.qty = remaining.qty
+            try:
+                self._replace_stop(trade, allow_orders, dry_run)
+            except StopReplacementError as exc:
+                self.store.update_trade(trade)
+                return f"{trade.symbol} adverse slope TP partially closed; protective stop replacement failed: {exc}"
+            self.store.update_trade(trade)
+            return f"{trade.symbol} adverse slope TP partially closed; remaining qty protected"
         self._cancel_system_stop(trade, dry_run)
         self._archive_trade(trade.symbol, trade, "adverse_slope_take_profit")
         return f"{trade.symbol} adverse slope TP triggered; position closed"
@@ -257,6 +373,38 @@ class LiveRuntime:
     def entry_notional(self, equity: float, leverage: int | None = None) -> float:
         selected_leverage = self.live_config.execution.leverage if leverage is None else leverage
         return equity * self.live_config.execution.margin_fraction * selected_leverage
+
+    def _entry_market_quality(self, symbol: str) -> tuple[float | None, str | None]:
+        fetch = getattr(self.exchange, "fetch_market_quote", None)
+        if not callable(fetch):
+            return None, "market quote unavailable; waiting"
+        try:
+            quote = fetch(symbol)
+        except Exception as exc:
+            return None, f"market quote unavailable; waiting: {exc}"
+        bid = _quote_value(quote, "bid")
+        ask = _quote_value(quote, "ask")
+        last = _quote_value(quote, "last")
+        if bid is None or ask is None or last is None or bid <= 0 or ask <= 0 or last <= 0 or ask < bid:
+            return None, "market quote unavailable; waiting"
+        spread_bps = (ask - bid) / last * 10000
+        if spread_bps > self.live_config.execution.max_market_spread_bps:
+            return last, f"market spread too wide ({spread_bps:.1f} bps); waiting"
+        return last, None
+
+    def _entry_slippage_warning(self, symbol: str, reference_price: float | None, fill_price: float | None) -> tuple[str | None, dict | None]:
+        if reference_price is None or fill_price is None or reference_price <= 0 or fill_price <= 0:
+            return None, None
+        slippage_bps = abs(fill_price - reference_price) / reference_price * 10000
+        if slippage_bps <= self.live_config.execution.max_entry_slippage_bps:
+            return None, None
+        payload = {
+            "reference_price": reference_price,
+            "fill_price": fill_price,
+            "slippage_bps": slippage_bps,
+            "max_entry_slippage_bps": self.live_config.execution.max_entry_slippage_bps,
+        }
+        return f"{symbol} entry fill slippage exceeded ({slippage_bps:.1f} bps); position protected and managed", payload
 
     def _open_local_for_symbol(self, symbol: str) -> LiveTrade | None:
         for side in ("long", "short"):
@@ -291,11 +439,34 @@ class LiveRuntime:
     def _replace_stop(self, trade: LiveTrade, allow_orders: bool, dry_run: bool) -> None:
         if not self.live_config.execution.maintain_exchange_stop:
             return
-        self._cancel_system_stop(trade, dry_run)
         if allow_orders and not dry_run:
-            order = self.exchange.create_reduce_only_stop(trade.symbol, trade.side, trade.qty, trade.current_stop_loss)
-            trade.system_stop_order_id = str(order.get("id"))
+            old_stop_order_id = trade.system_stop_order_id
+            try:
+                order = self.exchange.create_reduce_only_stop(trade.symbol, trade.side, trade.qty, trade.current_stop_loss)
+                new_stop_order_id = _order_id(order)
+                if new_stop_order_id is None:
+                    raise StopReplacementError("new stop order missing valid id")
+            except Exception as exc:
+                self._mark_emergency_protect(trade, exc)
+                if isinstance(exc, StopReplacementError):
+                    raise
+                raise StopReplacementError(str(exc)) from exc
+            self._cancel_system_stop(trade, dry_run)
+            trade.system_stop_order_id = new_stop_order_id
+            if old_stop_order_id and old_stop_order_id == new_stop_order_id:
+                return
         self.store.update_trade(trade)
+
+    def _mark_emergency_protect(self, trade: LiveTrade, exc: Exception) -> None:
+        reason = f"protective stop replacement failed for {trade.symbol}: {exc}"
+        self.emergency_protect_reason = reason
+        self.store.append_event(
+            "protective_stop_failed",
+            trade.symbol,
+            trade=trade,
+            event_time=self._now(),
+            payload_json=json.dumps({"reason": reason}, sort_keys=True),
+        )
 
     def _now(self):
         now = getattr(self.exchange, "now", None)
@@ -515,6 +686,52 @@ def _order_fill_price(order: dict) -> float | None:
         if value not in (None, ""):
             return float(value)
     return None
+
+
+def _order_id(order: dict) -> str | None:
+    value = order.get("id")
+    if value in (None, "", "None"):
+        return None
+    return str(value)
+
+
+def _matching_exchange_position(positions: list, symbol: str, side: str):
+    target_symbol = from_exchange_symbol(symbol)
+    return next(
+        (
+            position
+            for position in positions
+            if from_exchange_symbol(position.symbol) == target_symbol and position.side == side
+        ),
+        None,
+    )
+
+
+def _exchange_positions_notional(positions: list) -> float:
+    total = 0.0
+    for position in positions:
+        price = float(getattr(position, "mark_price", 0) or getattr(position, "entry_price", 0) or 0)
+        total += abs(float(position.qty)) * price
+    return total
+
+
+def _balance_values(balance) -> tuple[float, float]:
+    if hasattr(balance, "equity"):
+        return float(balance.equity), float(getattr(balance, "available", float("inf")))
+    return float(balance), float("inf")
+
+
+def _quote_value(quote, name: str) -> float | None:
+    value = getattr(quote, name, None)
+    if isinstance(quote, dict):
+        value = quote.get(name)
+    if value in (None, ""):
+        return None
+    return float(value)
+
+
+class StopReplacementError(RuntimeError):
+    pass
 
 
 def _same_time(left, right) -> bool:

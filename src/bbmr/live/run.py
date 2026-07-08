@@ -1,4 +1,8 @@
 import argparse
+from contextlib import contextmanager
+import fcntl
+import os
+from pathlib import Path
 import socket
 import time
 from urllib3.exceptions import ReadTimeoutError
@@ -39,17 +43,18 @@ def main(argv: list[str] | None = None) -> int:
     if missing:
         raise ValueError(f"missing credential environment variables: {', '.join(missing)}")
 
-    client = HyperliquidClient(config)
+    with _live_runner_lock(config.storage.sqlite_path):
+        client = HyperliquidClient(config)
 
-    runtime = LiveRuntime(config, client, store)
-    next_full_poll_at = None
-    while True:
-        if _should_full_poll(runtime, client, symbols, config, next_full_poll_at):
-            _poll_once(runtime, client, symbols, args.allow_testnet_orders, args.dry_run)
-            next_full_poll_at = _next_poll_time_after_full_poll(runtime, client, symbols, config)
-        if args.once:
-            return 0
-        time.sleep(_next_sleep_seconds(client.now(), next_full_poll_at, config))
+        runtime = LiveRuntime(config, client, store)
+        next_full_poll_at = None
+        while True:
+            if _should_full_poll(runtime, client, symbols, config, next_full_poll_at):
+                _poll_once(runtime, client, symbols, args.allow_testnet_orders, args.dry_run)
+                next_full_poll_at = _next_poll_time_after_full_poll(runtime, client, symbols, config)
+            if args.once:
+                return 0
+            time.sleep(_next_sleep_seconds(client.now(), next_full_poll_at, config))
 
 
 def _poll_once(runtime: LiveRuntime, client: HyperliquidClient, symbols: list[str], cli_allow_testnet_orders: bool, dry_run: bool) -> None:
@@ -71,6 +76,7 @@ def _poll_once(runtime: LiveRuntime, client: HyperliquidClient, symbols: list[st
         features = features_by_symbol[symbol]
         trade = runtime.managed_trade(symbol)
         if trade:
+            row_1h = latest_completed_row(features[0], poll_time, "1h")
             row_5m = latest_completed_row(features[2], poll_time, "5m")
             state_event = runtime.update_adverse_slope_take_profit(trade, features[0])
             if state_event:
@@ -81,10 +87,11 @@ def _poll_once(runtime: LiveRuntime, client: HyperliquidClient, symbols: list[st
                     print(f"{display_time} {tp_event}")
                     if runtime.managed_trade(symbol) is None:
                         continue
-            event = runtime.update_stop(trade, features[0].iloc[-1], row_5m, allow_orders, dry_run) if row_5m is not None else None
-            print(f"{display_time} {event or f'{symbol} managed position; waiting for trailing-stop update'}")
+            event = runtime.update_stop(trade, row_1h, row_5m, allow_orders, dry_run) if row_1h is not None and row_5m is not None else None
+            special = "[SPECIAL] " if trade.adverse_slope_tp_active else ""
+            print(f"{display_time} {special}{event or f'{symbol} managed position; waiting for trailing-stop update'}")
             continue
-        events = runtime.maybe_open_strategy_trade(symbol, *features, balance.equity, allow_orders, dry_run, exchange_positions=positions)
+        events = runtime.maybe_open_strategy_trade(symbol, *features, balance, allow_orders, dry_run, exchange_positions=positions)
         for event in events:
             print(f"{display_time} {event}")
         if not events:
@@ -149,6 +156,28 @@ def _next_sleep_seconds(now, next_full_poll_at: pd.Timestamp | None, config) -> 
         return float(config.execution.poll_seconds)
     seconds_to_full = max(0.0, (_utc_time(next_full_poll_at) - _utc_time(now)).total_seconds())
     return max(0.0, min(seconds_to_full, float(config.execution.idle_position_guard_seconds), float(config.execution.poll_seconds)))
+
+
+@contextmanager
+def _live_runner_lock(sqlite_path: str):
+    lock_path = Path(sqlite_path).parent / "live_runner.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+", encoding="utf-8")
+    try:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError(f"live runner already running; lock={lock_path}") from exc
+        handle.seek(0)
+        handle.truncate()
+        handle.write(str(os.getpid()))
+        handle.flush()
+        yield
+    finally:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
 
 
 def _is_recoverable_poll_network_error(exc: Exception) -> bool:

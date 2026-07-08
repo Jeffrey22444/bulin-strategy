@@ -39,8 +39,8 @@ Never use a forming `15m` candle for RSI baseline or RSI reversal confirmation.
   - period: `14`
   - method: `wilder`
   - warmup/history bars: `500`
-  - oversold: `31`
-  - overbought: `69`
+  - oversold: `32`
+  - overbought: `68`
 
 For live use, RSI must be computed from candles fetched from the same exchange environment whose chart is being matched. Hyperliquid testnet uses Hyperliquid testnet candles; Hyperliquid mainnet uses Hyperliquid mainnet candles.
 
@@ -115,16 +115,27 @@ Current live config:
 
 - `margin_fraction = 0.15`
 - `leverage = 3`
+- `max_total_notional_fraction = 1.0`
 - normal entry notional exposure is `45%` of account equity.
 - if the entry-side adverse-slope take-profit state is active at strategy entry, use `adverse_slope_leverage = 2`, so notional exposure is `30%` of account equity.
 
 This means "15%" refers to margin, not notional position size.
+
+Before a new strategy entry, the live runner blocks the entry if existing exchange notional plus the proposed strategy notional would exceed `account_equity * max_total_notional_fraction`. Existing notional includes all exchange positions, including manual/adopted positions, using `qty * mark_price` with entry price as fallback. This cap only blocks new strategy entries; it does not stop management of existing positions.
+
+Before real strategy orders, the live runner also blocks new entries when account equity is non-positive or available margin is below the proposed margin requirement (`proposed_notional / selected_leverage`). This guard only blocks new strategy entries and does not affect existing position management, stop updates, take-profit checks, or manual reconcile.
+
+Before real market entry, the live runner checks the current Hyperliquid ticker quote. If bid, ask, or last is missing/invalid, or if `(ask - bid) / last` exceeds `execution.max_market_spread_bps`, the strategy entry is blocked before leverage or market entry is submitted. After a real market entry, if the returned fill price (`average` or `price`) deviates from the pre-entry reference price by more than `execution.max_entry_slippage_bps`, the runner records an `entry_slippage_exceeded` journal event while still protecting and managing the confirmed exchange position.
 
 ## Strategy Add-On Rule
 
 The strategy does not add to an existing strategy position.
 
 If the user manually adds to a position on Hyperliquid, the system manages the merged exchange position size for stop maintenance. That manual add-on is not a strategy add signal.
+
+## Strategy Entry Lifecycle
+
+For real orders, a local strategy trade with `status = open` means the exchange has confirmed the same symbol/side position and the system-owned protective reduce-only stop has been created. If entry fills but stop creation fails, the runner keeps a recoverable local record and blocks duplicate strategy entry until a later reconcile can create the missing protective stop.
 
 ## Long Trailing Stop Chain
 
@@ -188,7 +199,7 @@ adverse_slope_take_profit:
 - While active, each managed-position poll checks live price:
   - Long closes when live price is `>= TP`.
   - Short closes when live price is `<= TP`.
-- The protective reduce-only stop remains in place while waiting. After active TP market close succeeds, the normal close/archive cleanup cancels the system stop and archives the trade.
+- The protective reduce-only stop remains in place while waiting. After active TP market close is submitted, the runner must confirm the same symbol/side exchange position is zero before cancelling the system stop and archiving the trade.
 
 ## Manual Position Handling
 
@@ -196,9 +207,8 @@ The live system polls Hyperliquid positions and reconciles them with local state
 
 If the exchange has a position but the local system has no open trade:
 
-- Treat it as a user/manual position.
-- Adopt it into trailing-stop management.
-- Create a system-owned reduce-only stop if order placement is allowed.
+- If `execution.adopt_manual_positions` is `true`, treat it as a user/manual position, adopt it into trailing-stop management, and create a system-owned reduce-only stop if order placement is allowed.
+- If `execution.adopt_manual_positions` is `false`, do not create a local trade or system stop; print a clear waiting message.
 
 If an existing local trade disappears from the exchange:
 
@@ -210,9 +220,9 @@ If an existing local trade disappears from the exchange:
 
 If the exchange position size or entry price changes:
 
-- Treat it as a manual size change.
-- Manage the merged exchange quantity.
-- Do not interpret the change as a strategy add signal.
+- If `execution.manage_full_manual_added_size` is `true`, treat it as a manual size change and manage the merged exchange quantity.
+- If `execution.manage_full_manual_added_size` is `false`, leave the existing local trade quantity/entry and system stop unchanged, and print a clear waiting message.
+- Do not interpret a manual size change as a strategy add signal.
 
 Default boundary: do not cancel or replace user-created manual orders.
 
