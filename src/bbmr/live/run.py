@@ -1,6 +1,7 @@
 import argparse
 from contextlib import contextmanager
 import fcntl
+import json
 import os
 from pathlib import Path
 import socket
@@ -66,7 +67,8 @@ def _poll_once(runtime: LiveRuntime, client: HyperliquidClient, symbols: list[st
     except Exception as exc:
         if not _is_recoverable_poll_network_error(exc):
             raise
-        print(f"{_display_time(client.now())} live poll network error; waiting for next cycle")
+        _record_recoverable_network_error(runtime, client, symbols, exc)
+        print(f"{_display_time(client.now())} [WARN] live poll network error; waiting for next cycle")
         return
     for symbol in symbols:
         poll_time = client.now()
@@ -131,7 +133,8 @@ def _light_guard_detects_active_state(runtime: LiveRuntime, client: HyperliquidC
     except Exception as exc:
         if not _is_recoverable_poll_network_error(exc):
             raise
-        print(f"{_display_time(client.now())} live poll network error; waiting for next cycle")
+        _record_recoverable_network_error(runtime, client, symbols, exc)
+        print(f"{_display_time(client.now())} [WARN] live poll network error; waiting for next cycle")
         return active_on_network_error
 
 
@@ -187,6 +190,13 @@ def _is_recoverable_poll_network_error(exc: Exception) -> bool:
         NetworkError = ()
         RequestTimeout = ()
     return isinstance(exc, (NetworkError, RequestTimeout, ConnectionError, ReadTimeout, ReadTimeoutError, TimeoutError, socket.timeout))
+
+
+def _record_recoverable_network_error(runtime: LiveRuntime, client: HyperliquidClient, symbols: list[str], exc: Exception) -> None:
+    payload = json.dumps({"severity": "WARN", "reason": f"{exc.__class__.__name__}: {exc}"}, sort_keys=True)
+    event_time = client.now()
+    for symbol in symbols:
+        runtime.store.append_event("recoverable_network_error", symbol, event_time=event_time, payload_json=payload)
 
 
 if __name__ == "__main__":

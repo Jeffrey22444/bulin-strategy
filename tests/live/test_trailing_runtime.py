@@ -406,6 +406,7 @@ def test_entry_fill_slippage_is_recorded_without_leaving_position_unprotected(tm
         "fill_price": 110.0,
         "max_entry_slippage_bps": 100.0,
         "reference_price": 105.0,
+        "severity": "WARN",
         "slippage_bps": pytest.approx(476.19047619047615),
     }
 
@@ -539,7 +540,8 @@ def test_set_leverage_failure_does_not_create_open_trade_or_clear_setup(tmp_path
     assert runtime.store.open_trade(runtime.position_key("BTC", "long")) is None
     assert "BTC" in runtime.setups
     assert runtime.store.connection.execute("SELECT COUNT(*) AS count FROM live_pending_setups").fetchone()["count"] == 1
-    assert [row["event_type"] for row in runtime.store.events()] == ["setup_created"]
+    assert [row["event_type"] for row in runtime.store.events()] == ["setup_created", "entry_order_not_confirmed"]
+    assert json.loads(runtime.store.events()[-1]["payload_json"])["severity"] == "ERROR"
 
 
 def test_market_entry_failure_without_position_does_not_create_open_trade(tmp_path):
@@ -550,7 +552,8 @@ def test_market_entry_failure_without_position_does_not_create_open_trade(tmp_pa
     assert "entry order not confirmed" in events[-1]
     assert runtime.store.open_trade(runtime.position_key("BTC", "long")) is None
     assert "BTC" in runtime.setups
-    assert runtime.store.events()[-1]["event_type"] == "setup_created"
+    assert runtime.store.events()[-1]["event_type"] == "entry_order_not_confirmed"
+    assert json.loads(runtime.store.events()[-1]["payload_json"])["severity"] == "ERROR"
 
 
 def test_market_entry_without_confirmed_position_does_not_create_open_trade(tmp_path):
@@ -561,7 +564,8 @@ def test_market_entry_without_confirmed_position_does_not_create_open_trade(tmp_
     assert "entry order not confirmed" in events[-1]
     assert runtime.store.open_trade(runtime.position_key("BTC", "long")) is None
     assert "BTC" in runtime.setups
-    assert runtime.store.events()[-1]["event_type"] == "setup_created"
+    assert runtime.store.events()[-1]["event_type"] == "entry_order_not_confirmed"
+    assert json.loads(runtime.store.events()[-1]["payload_json"])["severity"] == "ERROR"
 
 
 def test_market_entry_filled_but_stop_failure_keeps_unprotected_record(tmp_path):
@@ -575,6 +579,8 @@ def test_market_entry_filled_but_stop_failure_keeps_unprotected_record(tmp_path)
     assert trade.system_stop_order_id is None
     assert "BTC" in runtime.setups
     assert [row["event_type"] for row in runtime.store.events()][-2:] == ["protective_stop_failed", "entry_unprotected"]
+    assert json.loads(runtime.store.events()[-2]["payload_json"])["severity"] == "CRITICAL"
+    assert json.loads(runtime.store.events()[-1]["payload_json"])["severity"] == "CRITICAL"
 
 
 def test_reconcile_protects_unprotected_entry_before_open_management(tmp_path):
@@ -787,11 +793,12 @@ def test_stop_replacement_failure_keeps_old_stop_and_blocks_new_entries(tmp_path
     assert loaded.system_stop_order_id == "old-stop"
     assert runtime.exchange.cancelled == []
     assert runtime.store.events()[-1]["event_type"] == "protective_stop_failed"
+    assert json.loads(runtime.store.events()[-1]["payload_json"])["severity"] == "CRITICAL"
     assert "stop create failed" in runtime.emergency_protect_reason
 
     events = runtime.maybe_open_strategy_trade("SOL", *_future_long_features(close_5m=105), 10000, True)
 
-    assert events == [f"SOL strategy entry blocked: {runtime.emergency_protect_reason}"]
+    assert events == [f"[CRITICAL] SOL strategy entry blocked: {runtime.emergency_protect_reason}"]
     assert runtime.exchange.entries == []
 
 

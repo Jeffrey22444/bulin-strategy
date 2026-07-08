@@ -15,6 +15,13 @@ Track planning, handoffs, execution progress, blockers, and completed work here.
 
 ## Entries
 
+### 2026-07-08 - OPS-1 Safety Severity Journal
+- **Status**: Completed
+- **Zone**: Execution
+- **Description**: Adding minimal WARN/ERROR/CRITICAL terminal and SQLite journal evidence for existing live safety paths.
+- **Handoff**: None
+- **Notes**: Added terminal severity prefixes and `payload_json.severity` for recoverable network errors, entry slippage exceeded, entry order not confirmed, protective stop failures, and `entry_unprotected`. Added read-only `scripts/live_safety_journal.py` to print recent WARN/ERROR/CRITICAL journal rows. Scope stayed limited to existing safety states and journal payloads; no DB schema, mainnet unlock, client order IDs/tags, startup reconcile, external alerts, strategy signal, sizing, stop, or TP changes. Verified with `.venv/bin/python -m pytest tests/live/test_trailing_runtime.py tests/live/test_live_run.py tests/live/test_state_store.py tests/live/test_live_safety_journal.py -q`.
+
 ### 2026-07-08 - Strategy Entry Execution Quality Guard
 - **Status**: Completed
 - **Zone**: Execution

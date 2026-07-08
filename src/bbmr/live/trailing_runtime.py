@@ -88,7 +88,7 @@ class LiveRuntime:
                 self._replace_stop(open_local, allow_orders, dry_run)
             except StopReplacementError as exc:
                 self.store.update_trade(open_local)
-                events.append(f"{symbol} entry position found but protective stop missing: {exc}")
+                events.append(_severity_message("CRITICAL", f"{symbol} entry position found but protective stop missing: {exc}"))
                 return events
             open_local.status = "open"
             self.store.update_trade(open_local)
@@ -124,7 +124,7 @@ class LiveRuntime:
     ) -> list[str]:
         events: list[str] = []
         if self.emergency_protect_reason:
-            events.append(f"{symbol} strategy entry blocked: {self.emergency_protect_reason}")
+            events.append(_severity_message("CRITICAL", f"{symbol} strategy entry blocked: {self.emergency_protect_reason}"))
             return events
         if self._open_local_for_symbol(symbol):
             return events
@@ -213,7 +213,8 @@ class LiveRuntime:
             try:
                 self.exchange.set_leverage(symbol, selected_leverage, self.live_config.exchange.margin_mode)
             except Exception as exc:
-                return events + [f"{symbol} entry order not confirmed; setup retained: {exc}"]
+                self._append_entry_order_not_confirmed(symbol, setup, close_time, str(exc))
+                return events + [_severity_message("ERROR", f"{symbol} entry order not confirmed; setup retained: {exc}")]
             try:
                 order = self.exchange.create_market_entry(symbol, setup.side, self.exchange.format_qty(symbol, qty))
                 slippage_message, slippage_payload = self._entry_slippage_warning(symbol, entry_reference_price, _order_fill_price(order))
@@ -221,11 +222,13 @@ class LiveRuntime:
             except Exception as exc:
                 try:
                     positions = self.exchange.fetch_positions()
-                except Exception:
-                    return events + [f"{symbol} entry order not confirmed; setup retained: {exc}"]
+                except Exception as position_exc:
+                    self._append_entry_order_not_confirmed(symbol, setup, close_time, f"{exc}; position check failed: {position_exc}")
+                    return events + [_severity_message("ERROR", f"{symbol} entry order not confirmed; setup retained: {exc}")]
             exchange_position = _matching_exchange_position(positions, symbol, setup.side)
             if exchange_position is None or exchange_position.qty <= 0:
-                return events + [f"{symbol} entry order not confirmed; setup retained"]
+                self._append_entry_order_not_confirmed(symbol, setup, close_time, "confirmed exchange position missing")
+                return events + [_severity_message("ERROR", f"{symbol} entry order not confirmed; setup retained")]
             entry_price = exchange_position.entry_price
             qty = exchange_position.qty
             stop = _initial_stop_loss(setup.side, entry_price, self.strategy_config.trailing_stop.initial_stop_pct)
@@ -257,8 +260,15 @@ class LiveRuntime:
                 self._replace_stop(trade, allow_orders, dry_run)
             except StopReplacementError as exc:
                 self.store.update_trade(trade)
-                self.store.append_event("entry_unprotected", symbol, trade=trade, setup_trigger_time=setup.trigger_time, event_time=close_time)
-                return events + [f"{symbol} entry filled but protective stop failed; local recovery record kept: {exc}"]
+                self.store.append_event(
+                    "entry_unprotected",
+                    symbol,
+                    trade=trade,
+                    setup_trigger_time=setup.trigger_time,
+                    event_time=close_time,
+                    payload_json=json.dumps(_severity_payload("CRITICAL", reason=str(exc)), sort_keys=True),
+                )
+                return events + [_severity_message("CRITICAL", f"{symbol} entry filled but protective stop failed; local recovery record kept: {exc}")]
             trade.status = "open"
             self.store.update_trade(trade)
         else:
@@ -298,7 +308,7 @@ class LiveRuntime:
                 trade.trailing_stage = old_stage
                 trade.midband_follow_bucket_start = old_bucket
                 self.store.update_trade(trade)
-                return f"{trade.symbol} protective stop replacement failed; new strategy entries blocked: {exc}"
+                return _severity_message("CRITICAL", f"{trade.symbol} protective stop replacement failed; new strategy entries blocked: {exc}")
         self.store.update_trade(trade)
         self.store.append_event("stop_updated", trade.symbol, trade=trade, event_time=self._now())
         if new_stop == old_stop:
@@ -399,12 +409,13 @@ class LiveRuntime:
         if slippage_bps <= self.live_config.execution.max_entry_slippage_bps:
             return None, None
         payload = {
+            "severity": "WARN",
             "reference_price": reference_price,
             "fill_price": fill_price,
             "slippage_bps": slippage_bps,
             "max_entry_slippage_bps": self.live_config.execution.max_entry_slippage_bps,
         }
-        return f"{symbol} entry fill slippage exceeded ({slippage_bps:.1f} bps); position protected and managed", payload
+        return _severity_message("WARN", f"{symbol} entry fill slippage exceeded ({slippage_bps:.1f} bps); position protected and managed"), payload
 
     def _open_local_for_symbol(self, symbol: str) -> LiveTrade | None:
         for side in ("long", "short"):
@@ -465,7 +476,17 @@ class LiveRuntime:
             trade.symbol,
             trade=trade,
             event_time=self._now(),
-            payload_json=json.dumps({"reason": reason}, sort_keys=True),
+            payload_json=json.dumps(_severity_payload("CRITICAL", reason=reason), sort_keys=True),
+        )
+
+    def _append_entry_order_not_confirmed(self, symbol: str, setup: Setup, event_time, reason: str) -> None:
+        self.store.append_event(
+            "entry_order_not_confirmed",
+            symbol,
+            side=setup.side,
+            setup_trigger_time=setup.trigger_time,
+            event_time=event_time,
+            payload_json=json.dumps(_severity_payload("ERROR", reason=reason), sort_keys=True),
         )
 
     def _now(self):
@@ -728,6 +749,14 @@ def _quote_value(quote, name: str) -> float | None:
     if value in (None, ""):
         return None
     return float(value)
+
+
+def _severity_payload(severity: str, **payload) -> dict:
+    return {"severity": severity, **payload}
+
+
+def _severity_message(severity: str, message: str) -> str:
+    return f"[{severity}] {message}"
 
 
 class StopReplacementError(RuntimeError):

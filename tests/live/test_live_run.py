@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import json
 
 import pandas as pd
 import pytest
@@ -123,7 +124,10 @@ def test_live_run_continues_next_cycle_on_poll_timeout(tmp_path, monkeypatch, ca
     assert main(["--live-config", str(config_path), "--once"]) == 0
 
     output = capsys.readouterr().out
-    assert "2026-01-01 17:15:00+08:00 live poll network error; waiting for next cycle" in output
+    assert "2026-01-01 17:15:00+08:00 [WARN] live poll network error; waiting for next cycle" in output
+    row = LiveStateStore(str(tmp_path / "live.sqlite3")).events()[-1]
+    assert row["event_type"] == "recoverable_network_error"
+    assert json.loads(row["payload_json"])["severity"] == "WARN"
 
 
 def test_live_run_continues_next_cycle_on_ccxt_network_error(tmp_path, monkeypatch, capsys):
@@ -142,7 +146,10 @@ def test_live_run_continues_next_cycle_on_ccxt_network_error(tmp_path, monkeypat
     assert main(["--live-config", str(config_path), "--once"]) == 0
 
     output = capsys.readouterr().out
-    assert "2026-01-01 17:15:00+08:00 live poll network error; waiting for next cycle" in output
+    assert "2026-01-01 17:15:00+08:00 [WARN] live poll network error; waiting for next cycle" in output
+    row = LiveStateStore(str(tmp_path / "live.sqlite3")).events()[-1]
+    assert row["event_type"] == "recoverable_network_error"
+    assert json.loads(row["payload_json"])["severity"] == "WARN"
 
 
 def test_live_run_unknown_poll_error_still_raises(tmp_path, monkeypatch):
