@@ -1,5 +1,8 @@
 import pandas as pd
+import pytest
 
+from bbmr.config import load_config
+from bbmr.trailing_features import build_trailing_features
 from scripts import hyperliquid_rsi_calibration
 
 
@@ -33,4 +36,43 @@ def test_rsi_calibration_script_prints_fake_client_output(monkeypatch, capsys):
 
     output = capsys.readouterr().out
     assert "source=hyperliquid-testnet symbol=BTC timeframe=15m method=wilder period=14 warmup_bars=500" in output
+    assert "candle_open_at_utc=" in output
+    assert "candle_open_at_beijing=" in output
+    assert "completed_at_utc=" in output
+    assert "completed_at_beijing=" in output
+    assert "close=" in output
     assert "rsi=" in output
+
+
+class FiveMinuteClient:
+    def __init__(self, frame):
+        self.frame = frame
+
+    def fetch_ohlcv(self, symbol, timeframe, limit):
+        assert (symbol, timeframe, limit) == ("BTC", "5m", 500)
+        return self.frame
+
+    def now(self):
+        return self.frame.index[-1] + pd.Timedelta("5m")
+
+
+def test_calibration_rows_match_live_builder_5m_rsi_for_same_ohlcv():
+    config = load_config("configs/strategy_bbmr_trailing_stop_v1.yaml")
+    index = pd.date_range("2030-01-01", periods=500, freq="5min", tz="UTC")
+    close = [100 + (position % 2) for position in range(497)] + [100, 101, 103]
+    frame = pd.DataFrame(
+        {"open": close, "high": [value + 1 for value in close], "low": [value - 1 for value in close], "close": close, "volume": 1},
+        index=index,
+    )
+
+    calibration_rows = hyperliquid_rsi_calibration.completed_rsi_rows(FiveMinuteClient(frame), config, "BTC", "5m", 5)
+    live_rows = build_trailing_features(frame, frame, frame, config)[2].dropna(subset=["rsi14"]).tail(5)
+
+    assert len(calibration_rows) == len(live_rows) == 5
+    for (candle_open_at, completed_at, close_value, rsi_value), (live_open_at, live_row) in zip(
+        calibration_rows, live_rows.iterrows(), strict=True
+    ):
+        assert candle_open_at == live_open_at
+        assert completed_at == live_open_at + pd.Timedelta("5m")
+        assert close_value == live_row.close
+        assert rsi_value == pytest.approx(live_row.rsi14)

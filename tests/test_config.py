@@ -4,104 +4,177 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from bbmr.config import StrategyConfig, TrailingStrategyConfig, load_config
+from bbmr.config import TrailingStrategyConfig, load_config
 
 
-CONFIG_PATH = Path("configs/strategy_bbmr_v3_2.yaml")
-TRAILING_CONFIG_PATH = Path("configs/strategy_bbmr_trailing_stop_v1.yaml")
+CONFIG_PATH = Path("configs/strategy_bbmr_trailing_stop_v1.yaml")
 
 
-def _config_data():
+def _data():
     with CONFIG_PATH.open("r", encoding="utf-8") as handle:
         return yaml.safe_load(handle)
 
 
-def _trailing_config_data():
-    with TRAILING_CONFIG_PATH.open("r", encoding="utf-8") as handle:
-        return yaml.safe_load(handle)
-
-
-def test_loads_strategy_config():
+def test_loads_active_trailing_strategy_config():
     config = load_config(CONFIG_PATH)
-    assert config.strategy.name == "bbmr_v3_2"
-    assert config.strategy.allow_live_trading is False
-    assert config.safety.allow_live_trading is False
 
-
-def test_loads_trailing_strategy_config():
-    config = load_config(TRAILING_CONFIG_PATH)
     assert config.strategy.name == "bbmr_trailing_stop_v1"
-    assert 0 < config.trailing_stop.initial_stop_pct < 1
     assert config.rsi.method == "wilder"
     assert config.rsi.warmup_bars == 500
+    assert config.rsi.oversold == 40
+    assert config.rsi.overbought == 60
+    assert config.rsi.adverse_slope_oversold == 32
+    assert config.rsi.adverse_slope_overbought == 68
     assert config.entry_confirmation.require_15m_rsi_reversal is False
     assert config.trailing_stop.first_step_risk_reduction == 0.5
-    assert config.adverse_slope_take_profit.enabled is True
-    assert config.adverse_slope_take_profit.slope_n == 3
-    assert config.adverse_slope_take_profit.slope_threshold_pct == 0.003
-    assert config.adverse_slope_take_profit.near_middle_frac == 0.0
+    assert config.adverse_slope_take_profit.special_near_middle_frac == 0.0
+    assert config.adverse_slope_take_profit.exspecial_near_middle_frac == 0.5
+    assert config.bandwidth_entry_guard.percentile_lookback == 120
+    assert config.trend_riding.mode == "live"
+    assert config.trend_riding.opposite_mr_takeover_mode == "live"
+    assert config.trend_riding.pending_ttl_hours == 6
 
 
-def test_trailing_entry_confirmation_defaults_to_required():
-    data = _trailing_config_data()
-    del data["entry_confirmation"]
+@pytest.mark.parametrize("strategy_name", [None, "bbmr_v3_2", "unknown"])
+def test_load_config_rejects_missing_or_non_active_strategy_identity(tmp_path, strategy_name):
+    data = _data()
+    if strategy_name is None:
+        data.pop("strategy")
+    else:
+        data["strategy"]["name"] = strategy_name
+    path = tmp_path / "wrong_strategy.yaml"
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="strategy.name must be bbmr_trailing_stop_v1"):
+        load_config(path)
+
+
+@pytest.mark.parametrize(
+    ("container", "field", "value"),
+    [
+        ("strategy", "mode", "research_backtest"),
+        ("strategy", "allow_ai_signal", False),
+        ("strategy", "allow_breakout_trade", False),
+        ("strategy", "allow_live_trading", False),
+        ("strategy", "allow_leverage", False),
+        (None, "symbols", {"default": ["BTC"]}),
+        (None, "timeframes", {"signal_tf": "1h"}),
+        (None, "safety", {"stop_on_undefined_rule": True}),
+    ],
+)
+def test_removed_inert_strategy_keys_are_rejected(container, field, value):
+    data = _data()
+    target = data if container is None else data[container]
+    target[field] = value
+
+    with pytest.raises(ValidationError, match=field):
+        TrailingStrategyConfig.model_validate(data)
+
+
+def test_trend_riding_defaults_to_off():
+    data = _data()
+    del data["trend_riding"]
     config = TrailingStrategyConfig.model_validate(data)
-    assert config.entry_confirmation.require_15m_rsi_reversal is True
+    assert config.trend_riding.mode == "off"
+    assert config.trend_riding.opposite_mr_takeover_mode == "off"
+    assert config.trend_riding.pending_ttl_hours == 6
 
 
-def test_trailing_stop_initial_stop_pct_defaults_to_2_percent():
-    data = _trailing_config_data()
-    del data["trailing_stop"]
+def test_trend_takeover_defaults_to_off_when_legacy_fields_are_missing():
+    data = _data()
+    data["trend_riding"].pop("opposite_mr_takeover_mode")
+    data["trend_riding"].pop("pending_ttl_hours")
+
     config = TrailingStrategyConfig.model_validate(data)
-    assert config.trailing_stop.initial_stop_pct == 0.02
-    assert config.trailing_stop.first_step_risk_reduction == 1.0
+
+    assert config.trend_riding.opposite_mr_takeover_mode == "off"
+    assert config.trend_riding.pending_ttl_hours == 6
 
 
-@pytest.mark.parametrize("initial_stop_pct", [0, -0.01, 1, 1.01])
-def test_trailing_stop_initial_stop_pct_must_be_between_0_and_1(initial_stop_pct):
-    data = _trailing_config_data()
-    data["trailing_stop"]["initial_stop_pct"] = initial_stop_pct
+@pytest.mark.parametrize(
+    ("mode", "takeover_mode"),
+    [
+        ("off", "shadow"),
+        ("off", "live"),
+        ("shadow", "live"),
+        ("invalid", "off"),
+        ("live", "invalid"),
+    ],
+)
+def test_trend_takeover_mode_combinations_fail_closed(mode, takeover_mode):
+    data = _data()
+    data["trend_riding"]["mode"] = mode
+    data["trend_riding"]["opposite_mr_takeover_mode"] = takeover_mode
+
     with pytest.raises(ValidationError):
         TrailingStrategyConfig.model_validate(data)
 
 
-@pytest.mark.parametrize("first_step_risk_reduction", [-0.01, 1.01])
-def test_trailing_stop_first_step_risk_reduction_must_be_between_0_and_1(first_step_risk_reduction):
-    data = _trailing_config_data()
-    data["trailing_stop"]["first_step_risk_reduction"] = first_step_risk_reduction
+@pytest.mark.parametrize("ttl", [0, -1, 1.5, True])
+def test_trend_pending_ttl_must_be_a_positive_integer(ttl):
+    data = _data()
+    data["trend_riding"]["pending_ttl_hours"] = ttl
+
     with pytest.raises(ValidationError):
         TrailingStrategyConfig.model_validate(data)
 
 
-def test_missing_required_config_fails():
-    data = _config_data()
-    del data["bollinger"]
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("entry_pullback_pct", 0),
+        ("entry_pullback_pct", 1),
+        ("weakening_slope_threshold_pct", 0),
+        ("weakening_slope_threshold_pct", 1),
+        ("initial_stop_distance_pct", 0),
+        ("initial_stop_distance_pct", 1),
+    ],
+)
+def test_trend_riding_ratios_must_be_between_zero_and_one(field, value):
+    data = _data()
+    data["trend_riding"][field] = value
     with pytest.raises(ValidationError):
-        StrategyConfig.model_validate(data)
+        TrailingStrategyConfig.model_validate(data)
 
 
-def test_wrong_type_fails():
-    data = _config_data()
-    data["bollinger"]["bb_period"] = "twenty"
+@pytest.mark.parametrize(
+    ("special", "weakening", "exspecial"),
+    [(0.0018, 0.0018, 0.0025), (0.0019, 0.0018, 0.0025), (0.0009, 0.0025, 0.0025)],
+)
+def test_trend_weakening_threshold_must_be_between_slope_regimes(special, weakening, exspecial):
+    data = _data()
+    data["adverse_slope_take_profit"]["special_slope_threshold_pct"] = special
+    data["trend_riding"]["weakening_slope_threshold_pct"] = weakening
+    data["adverse_slope_take_profit"]["exspecial_slope_threshold_pct"] = exspecial
+    with pytest.raises(ValidationError, match="weakening_slope_threshold_pct"):
+        TrailingStrategyConfig.model_validate(data)
+
+
+@pytest.mark.parametrize(("field", "value"), [("adverse_slope_oversold", -1), ("adverse_slope_overbought", 101)])
+def test_adverse_slope_rsi_thresholds_must_be_between_0_and_100(field, value):
+    data = _data()
+    data["rsi"][field] = value
     with pytest.raises(ValidationError):
-        StrategyConfig.model_validate(data)
+        TrailingStrategyConfig.model_validate(data)
 
 
-def test_negative_bar_count_fails():
-    data = _config_data()
-    data["entry_confirmation"]["reentry_bars"] = -1
+def test_adverse_slope_rsi_thresholds_must_be_ordered():
+    data = _data()
+    data["rsi"]["adverse_slope_oversold"] = 68
+    with pytest.raises(ValidationError, match="adverse_slope_oversold"):
+        TrailingStrategyConfig.model_validate(data)
+
+
+@pytest.mark.parametrize(("field", "value"), [("special_near_middle_frac", -0.01), ("exspecial_near_middle_frac", 1.01)])
+def test_regime_near_middle_fractions_must_be_between_zero_and_one(field, value):
+    data = _data()
+    data["adverse_slope_take_profit"][field] = value
     with pytest.raises(ValidationError):
-        StrategyConfig.model_validate(data)
+        TrailingStrategyConfig.model_validate(data)
 
 
-def test_ratio_out_of_range_fails():
-    data = _config_data()
-    data["position_sizing"]["risk_per_trade"] = 2
-    with pytest.raises(ValidationError):
-        StrategyConfig.model_validate(data)
-
-
-def test_phase1a_runtime_dependencies_stay_minimal():
-    text = Path("pyproject.toml").read_text(encoding="utf-8")
-    assert "SQLAlchemy" not in text
-    assert "vectorbt" not in text
+def test_legacy_near_middle_fraction_is_rejected():
+    data = _data()
+    data["adverse_slope_take_profit"]["near_middle_frac"] = 0.0
+    with pytest.raises(ValidationError, match="near_middle_frac"):
+        TrailingStrategyConfig.model_validate(data)

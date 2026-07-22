@@ -23,18 +23,35 @@ def test_live_config_loads_trailing_strategy():
     assert config.execution.idle_candle_grace_seconds == 10
     assert config.execution.idle_position_guard_seconds == 30
     assert config.execution.margin_fraction == 0.15
-    assert config.execution.max_total_notional_fraction == 1.0
+    assert config.execution.max_total_notional_fraction == 1.20
     assert config.execution.max_market_spread_bps == 50.0
     assert config.execution.max_entry_slippage_bps == 100.0
     assert config.execution.leverage == 3
     assert config.execution.adverse_slope_leverage == 2
     assert config.execution.adopt_manual_positions is True
     assert config.execution.manage_full_manual_added_size is True
+    assert config.exchange.allow_mainnet is False
 
 
-def test_old_strategy_config_is_rejected():
+def test_symbols_are_canonicalized_by_live_adapter_rules():
     data = _data()
-    data["strategy_config"] = "configs/strategy_bbmr_v3_2.yaml"
+    data["symbols"]["default"] = ["btc", "ETH/USDC:USDC", "SOLUSDC"]
+
+    assert LiveConfig.model_validate(data).symbols.default == ["BTC", "ETH", "SOL"]
+
+
+@pytest.mark.parametrize("symbols", [[], [""], ["BTC", "btc"], ["BTC", "BTCUSDC"], ["BTC", "BTC/USDC:USDC"]])
+def test_symbols_reject_empty_or_equivalent_values(symbols):
+    data = _data()
+    data["symbols"]["default"] = symbols
+
+    with pytest.raises(ValidationError, match="symbols.default"):
+        LiveConfig.model_validate(data)
+
+
+def test_old_strategy_config_path_is_rejected():
+    data = _data()
+    data["strategy_config"] = "configs/unsupported_strategy.yaml"
     with pytest.raises(ValidationError, match="strategy_config"):
         LiveConfig.model_validate(data)
 
@@ -66,6 +83,13 @@ def test_leverage_fields_are_validated():
     data = _data()
     data["execution"]["adverse_slope_leverage"] = 0
     with pytest.raises(ValidationError):
+        LiveConfig.model_validate(data)
+
+
+def test_removed_default_leverage_is_rejected():
+    data = _data()
+    data["exchange"]["default_leverage"] = 3
+    with pytest.raises(ValidationError, match="default_leverage"):
         LiveConfig.model_validate(data)
 
 
@@ -113,6 +137,14 @@ def test_strategy_add_is_rejected():
     data = _data()
     data["execution"]["allow_strategy_add"] = True
     with pytest.raises(ValidationError, match="strategy add"):
+        LiveConfig.model_validate(data)
+
+
+def test_order_capable_execution_requires_exchange_stop_maintenance():
+    data = _data()
+    data["execution"]["allow_testnet_orders"] = True
+    data["execution"]["maintain_exchange_stop"] = False
+    with pytest.raises(ValidationError, match="maintain_exchange_stop"):
         LiveConfig.model_validate(data)
 
 

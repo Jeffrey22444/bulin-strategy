@@ -19,4 +19,5 @@ def build_trailing_features(
     features_5m = features_5m.join(
         compute_bollinger(features_5m["close"], config.bollinger.bb_period, config.bollinger.bb_std_mult)
     )
+    features_5m["rsi14"] = compute_rsi(features_5m["close"], config.rsi.period, config.rsi.method)
     return features_1h, features_15m, features_5m

@@ -1,4 +1,3 @@
-import numpy as np
 import pandas as pd
 import pytest
 
@@ -30,7 +29,7 @@ def test_bollinger_does_not_use_future_data():
 def test_bw_percentile_uses_only_rolling_window():
     bw = pd.Series([1.0, 100.0, 2.0, 3.0])
     result = compute_bw_percentile(bw, lookback=3)
-    assert np.isnan(result.iloc[1])
+    assert pd.isna(result.iloc[1])
     assert result.iloc[2] == pytest.approx(200 / 3)
     assert result.iloc[3] == pytest.approx(200 / 3)
 

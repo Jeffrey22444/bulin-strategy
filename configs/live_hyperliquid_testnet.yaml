@@ -6,7 +6,6 @@ exchange:
   wallet_address_env: "HYPERLIQUID_WALLET_ADDRESS"
   private_key_env: "HYPERLIQUID_PRIVATE_KEY"
   allow_mainnet: false
-  default_leverage: 3
   margin_mode: "cross"
   enable_rate_limit: true
   timeout_ms: 10000
@@ -14,11 +13,12 @@ exchange:
 execution:
   allow_testnet_orders: true
   margin_fraction: 0.15
-  max_total_notional_fraction: 1.0
+  max_total_notional_fraction: 1.20
   max_market_spread_bps: 50.0
   max_entry_slippage_bps: 100.0
   leverage: 3
   adverse_slope_leverage: 2
+  trend_riding_leverage: 2
   allow_strategy_add: false
   adopt_manual_positions: true
   manage_full_manual_added_size: true

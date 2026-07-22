@@ -14,11 +14,46 @@ Track recurring or instructive bugs here. Keep entries brief and chronological.
 
 ## Entries
 
+### 2026-07-20 - Closed Protection History Blocked New Strategy Entries
+- **Issue**: Archived trades retaining `protection_status='unknown'` or `'recovery'` incorrectly triggered the account-wide protective-stop recovery gate.
+- **Root Cause**: The recovery query considered protection status without excluding the known terminal `status='closed'`, although archival correctly preserves that historical field.
+- **Solution**: Exclude only `closed` trades before evaluating unsafe protection states; keep every non-closed unsafe state and every stop-replacement intent blocking.
+- **Prevention**: Temporary SQLite and runtime-seam tests cover closed history, active unsafe states, and pending stop replacements.
+
+### 2026-07-20 - Frontend Rejected Valid Entry Flow After Backend Reordered Checks
+- **Issue**: The localhost dashboard displayed only its unavailable fallback despite fresh snapshot and API data.
+- **Root Cause**: The frontend required entry steps and connectors to arrive in its visual order. The backend correctly returned the same known nodes in its evaluation order, with BandWidth before the completed-5m nodes, so the frontend discarded the complete payload.
+- **Solution**: Validate the known entry node and connector sets, including valid states and uniqueness, without treating transport order as a schema requirement; keep management-lane ordered validation unchanged.
+- **Prevention**: Frontend test asserts the order-tolerant entry validation helpers; Chrome verification confirms a fresh live payload renders after reload.
+
+### 2026-07-13 - Special TP market-price timeout could still crash live runner
+- **Issue**: A recoverable timeout from `get_market_price()` while an adverse-slope TP state was active could exit the live runner.
+- **Root Cause**: The managed-position TP price read in `_poll_once()` was outside the existing startup, poll-read, and entry-check network guards.
+- **Solution**: Catch only recoverable errors around that price read, append a symbol-level WARN journal event, skip the TP check, then continue normal trailing-stop maintenance.
+- **Prevention**: Focused live-run tests cover recoverable price-read continuation and unknown-error propagation.
+
+### 2026-07-13 - Entry-side open-order probe timeout could still crash live runner
+- **Issue**: The live runner could still exit on Hyperliquid testnet `RequestTimeout` during `fetch_open_orders()` even after startup and poll-read network guards were added.
+- **Root Cause**: `run.py` only treated startup client creation and the initial `_poll_once()` read bundle as recoverable. Later entry-side exchange reads inside `maybe_open_strategy_trade()` could still call `fetch_open_orders()` and bubble a recoverable timeout out of the live loop.
+- **Solution**: Catch recoverable network errors around `maybe_open_strategy_trade()` in `_poll_once()`, append a WARN journal event for that symbol, print an entry-check warning, and skip entry work until the next cycle.
+- **Prevention**: Focused live-run tests cover `RequestTimeout` during entry-side open-order probing.
+
+### 2026-07-09 - Live runner exited on startup market-load timeout
+- **Issue**: Hyperliquid testnet startup could crash before entering the live loop when `load_markets()` timed out.
+- **Root Cause**: The recoverable network guard only wrapped `_poll_once()` reads; `HyperliquidClient(config)` in `main()` performs `exchange.load_markets()` earlier, so `RequestTimeout` escaped before the loop started.
+- **Solution**: Treat recoverable startup `HyperliquidClient` construction failures like poll-time network errors: append a WARN journal event, print a startup warning, and retry on the next cycle; `--once` exits cleanly after logging the warning.
+- **Prevention**: Focused live-run tests cover recoverable startup `RequestTimeout` and unknown startup exception propagation.
+
 ### 2026-07-08 - Strategy entry could mark local open before exchange protection was confirmed
 - **Issue**: The live strategy entry path created a local `status=open` trade before real `set_leverage`, market entry, and protective stop creation were all confirmed.
 - **Root Cause**: `maybe_open_strategy_trade()` wrote the local trade before the exchange lifecycle completed, so later exchange failures could leave misleading local state or duplicate-entry risk.
 - **Solution**: For real orders, create `open` only after same symbol/side position confirmation and successful protective stop creation; filled entries with stop failure are stored as `entry_unprotected` and repaired by later reconcile.
 - **Prevention**: Focused tests cover leverage failure, market-entry failure, missing position confirmation, stop failure after fill, store persistence for `entry_unprotected`, and reconcile promotion to `open`.
+
+### 2026-07-14 - Dashboard Must Not Present Unprotected Entry As Managed Position
+- **Cause**: The dashboard observation treated every locally managed trade as protected, including persisted `entry_unprotected` recovery records.
+- **Solution**: Expose `entry_unprotected` as an explicit blocked/tagged state, mute its management branch, and freeze archive SVG state directly from the closing trade rather than a prior dashboard snapshot.
+- **Prevention**: Dashboard tests cover unprotected display/branch state and reject stale `current.json` content in newly created archive SVGs; frontend tests assert branch connectors are rendered from backend data.
 
 ### 2026-07-08 - Adverse-slope TP archived before exchange position zero confirmation
 - **Issue**: The adverse-slope take-profit path could cancel the system stop and archive the local trade immediately after submitting a reduce-only market close.

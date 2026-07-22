@@ -1,18 +1,5 @@
 strategy:
   name: "bbmr_trailing_stop_v1"
-  mode: "research_backtest"
-  allow_ai_signal: false
-  allow_breakout_trade: false
-  allow_live_trading: false
-  allow_leverage: false
-
-symbols:
-  default: ["BTC", "ETH", "SOL"]
-
-timeframes:
-  signal_tf: "1h"
-  entry_confirm_tf: "15m"
-  execution_tf: "5m"
 
 bollinger:
   bb_period: 20
@@ -22,8 +9,10 @@ rsi:
   period: 14
   method: "wilder"
   warmup_bars: 500
-  oversold: 32
-  overbought: 68
+  oversold: 40
+  overbought: 60
+  adverse_slope_oversold: 32
+  adverse_slope_overbought: 68
 
 entry_confirmation:
   require_15m_rsi_reversal: false
@@ -35,17 +24,26 @@ trailing_stop:
 adverse_slope_take_profit:
   enabled: true
   slope_n: 3
-  slope_threshold_pct: 0.003
-  near_middle_frac: 0.0
+  special_slope_threshold_pct: 0.0009
+  exspecial_slope_threshold_pct: 0.0025
+  special_near_middle_frac: 0.0
+  exspecial_near_middle_frac: 0.5
+
+bandwidth_entry_guard:
+  enabled: true
+  percentile_lookback: 120
+  high_percentile: 80
+  min_1h_expansion_pct: 0.15
+
+trend_riding:
+  mode: live
+  opposite_mr_takeover_mode: live
+  pending_ttl_hours: 6
+  entry_pullback_pct: 0.006
+  weakening_slope_threshold_pct: 0.0018
+  initial_stop_distance_pct: 0.05
 
 costs:
-  taker_fee_bps: 0.0
-  maker_fee_bps: 0.0
+  taker_fee_bps: 4.5
+  maker_fee_bps: 1.5
   slippage_bps: 0.0
-
-safety:
-  no_hardcoded_strategy_params: true
-  stop_on_undefined_rule: true
-  allow_liquidation_price_check: false
-  allow_hyperliquid_testnet: false
-  allow_live_trading: false

@@ -1,4 +1,5 @@
-import numpy as np
+from math import nan
+
 import pandas as pd
 
 
@@ -36,7 +37,7 @@ def compute_rsi(close: pd.Series, period: int, method: str = "sma") -> pd.Series
 
 
 def _wilder_rma(values: pd.Series, period: int) -> pd.Series:
-    result = pd.Series(np.nan, index=values.index, dtype=float)
+    result = pd.Series(nan, index=values.index, dtype=float)
     if len(values) <= period:
         return result
     result.iloc[period] = values.iloc[1 : period + 1].mean()
@@ -55,7 +56,7 @@ def compute_atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int) 
         ],
         axis=1,
     ).max(axis=1)
-    true_range.iloc[0] = np.nan
+    true_range.iloc[0] = nan
     return true_range.rolling(period).mean()
 
 

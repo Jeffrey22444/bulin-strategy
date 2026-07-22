@@ -7,12 +7,15 @@ This project uses four working zones. Each zone must read `AGENTS.md` and this d
 Use the shortest artifact that can safely carry the work.
 
 - Do not repeat stable project rules in every prompt. Reference `AGENTS.md`, this document, `docs/strategy_consensus/bbmr_trailing_stop_v1.md`, and relevant ADRs instead.
-- Start with 3-5 files to read, then expand only when the code path requires it.
+- Default startup reads are only `AGENTS.md`, this document, `docs/project_notes/key_facts.md`, and `docs/project_notes/issues.md` Current Summary plus the latest relevant entry.
+- Read strategy consensus, decisions, bugs, task-specific files, or optional `current_task.md` only when the task triggers them. Never scan all of `issues.md` by default.
 - Prefer short task cards over full handoffs for small and medium scoped work.
 - Do not split work so finely that Execution Zone loses momentum; use one medium-sized task card for coherent multi-file work.
 - For longer but still clear scoped tasks, mark them as suitable for a persistent implementation run instead of fragmenting them into many tiny prompts.
+- Use optional `docs/project_notes/current_task.md` only when an active complex task or Acceptance Contract benefits from a persistent surface; overwrite it for the next task and keep history in concise `issues.md` entries.
 - Write `/private/tmp` handoffs only for complex, multi-stage, architecture-affecting, ambiguous, or failed-acceptance work.
 - Generate Acceptance Zone prompts only when behavior is strategy-critical, safety-critical, broad, risky, or the user asks.
+- Activate only zones with a concrete job for the current slice. Do not wake all four zones for symmetry.
 - Do not ask another zone to re-plan work that is already clear; pass only the delta, evidence, and stop conditions.
 - If a stable constraint is already in strategy consensus or an ADR, cite it by name instead of restating the whole rule.
 - Task cards should separate stable context from this-turn required reading. Stable docs should be referenced, not recopied.
@@ -48,6 +51,18 @@ Default Acceptance Contract:
 验收输入：验收合同 + 执行区证据报告 + 当前 diff
 ```
 
+Default Execution evidence report:
+
+```text
+任务ID：
+改动文件：
+范围边界：
+执行命令与结果：
+手工检查：
+明确未做：
+阻塞 / 需规划决策：
+```
+
 Default Maintenance handoff summary:
 
 ```text
@@ -69,11 +84,13 @@ Responsibilities:
 - Produce execution prompts or handoffs only after the user agrees.
 - For small scoped code changes, prefer a concise execution prompt instead of a full handoff.
 - For complex, multi-stage, architectural, or risky work, write a full handoff.
-- Produce a short Acceptance Contract alongside each Execution Zone task card unless the user explicitly skips acceptance.
+- Attach a short Acceptance Contract to every Execution Zone task card; decide separately whether risk requires an independent Acceptance pass.
+- Use `current_task.md` only for an active complex task; do not create it when no such task exists.
 
 Boundaries:
-- Do not edit production code unless the user explicitly asks.
+- Do not edit production code, tests, YAML, or frontend; route agreed implementation work to Execution Zone.
 - Do not silently decide unclear strategy behavior.
+- Do not route work to Execution until the user agrees to the direction and scope.
 - Do not generate acceptance prompts for simple scoped fixes unless the user asks.
 
 Preferred output:
@@ -102,6 +119,7 @@ Responsibilities:
 - Run focused tests; run broader tests if risk warrants.
 - Report changed files, behavior changed, test commands/results, and remaining limits.
 - Treat self-check as evidence collection, not independent acceptance review.
+- Write concise execution evidence to the matching `issues.md` task entry so Acceptance does not depend on user paste-through.
 
 Boundaries:
 - Do not redesign, expand scope, or add extra features.
@@ -118,20 +136,20 @@ Preferred output:
 
 ## Acceptance Zone（验收区）
 
-Acceptance Zone（验收区）验收执行区结果，也可以回答用户关于代码、当前交易策略实现、设计取舍的问题；但不负责大幅修改策略。
+Acceptance Zone（验收区）独立、只读地验收执行区结果，只判断 `通过 / 不通过`。
 
 Responsibilities:
 - Inspect code, tests, diffs, and behavior against the prompt/handoff.
 - Verify acceptance criteria, safety boundaries, and regression risks.
 - Prioritize findings by severity with file/line references.
-- Decide pass or fail.
-- Answer user questions about code behavior, current strategy implementation, or design issues when the question is review/understanding oriented.
+- Decide only pass or fail.
 - If the user explicitly marks a specific config or strategy diff as a manual user edit outside the execution scope, treat that diff as user-owned and do not fail acceptance on that point alone unless the user asks to include manual edits in scope.
 - If strategy changes become broad or ambiguous, route to Planning Zone.
 - Use the Acceptance Contract plus Execution evidence as the default review input for small and medium work, instead of requiring the full execution prompt every time.
 
 Boundaries:
 - Do not modify code.
+- Do not modify documentation, including `issues.md`, or write handoff files.
 - Do not redesign the solution.
 - Do not make large trading-strategy changes.
 - Do not introduce new scope unless required to satisfy the original acceptance criteria.
@@ -142,14 +160,8 @@ Preferred output:
 - Evidence with file/line references.
 - Missing tests or residual risks.
 - If acceptance fails and the fix is simple, directly generate a concise task-card prompt for Execution Zone.
-- If acceptance fails and the problem is complex, write an acceptance handoff report for Planning Zone under `/private/tmp/`, then tell the user with:
-
-```text
-读取：/private/tmp/XXXX.md
-
-简单说明问题：
-<验收不通过的核心原因、规划区需要决策的点、补充说明>
-```
+- If acceptance fails, include the smallest rework task in the read-only verdict. Planning decides whether a complex failure needs a separate handoff document.
+- After the verdict, Planning Zone or Execution Zone records it verbatim in the matching `issues.md` entry and updates `Latest accepted slice` only for `通过`.
 
 ## Maintenance Zone（维护区）
 
@@ -204,6 +216,7 @@ Use this structure for full execution handoffs:
 
 - Each zone must remember its current identity through long conversations, handoffs, and context compression.
 - A zone must not casually absorb another zone's work. If work belongs elsewhere, route it with the smallest useful task card or handoff.
+- A frontend-dedicated window may change `frontend/` and the smallest read-only dashboard/API display adapter needed for the website, but it must not change production strategy, order/runtime behavior, or backend strategy tests. Route those changes to Execution Zone.
 
 - Planning Zone（规划区） defines intent and scope.
 - Execution Zone（执行区） implements scoped changes.
@@ -233,20 +246,12 @@ Execution and acceptance split:
 1. Execution Zone reports evidence: changed files, scope honored, commands run, manual checks if any, skipped scope, and blockers.
 2. Acceptance Zone focuses on blind spots: scope creep, missing edge cases, persistence/safety regressions, and user-visible behavior.
 3. If Execution evidence is weak, Acceptance Zone may fail for insufficient verification instead of redoing implementation work.
+4. Acceptance never writes files; Planning or Execution records the returned verdict verbatim in `issues.md`.
 
 Complex-failure flow:
 1. Acceptance Zone finds a complex or architecture-affecting failure.
-2. Acceptance Zone writes `/private/tmp/...handoff.md` for Planning Zone.
-3. User gives Planning Zone:
-
-```text
-读取：/private/tmp/XXXX.md
-
-简单说明问题：
-<验收区补充说明>
-```
-
-4. Planning Zone decides scope and produces the next execution instruction.
+2. Acceptance Zone returns `不通过`, evidence, and the smallest rework task without writing files.
+3. Planning Zone decides scope and, only if needed, writes a `/private/tmp/...handoff.md` for the next Execution task.
 
 Conflict handling:
 - If strategy behavior is unclear, read `docs/strategy_consensus/bbmr_trailing_stop_v1.md`.
@@ -264,8 +269,8 @@ Conflict handling:
 1. AGENTS.md
 2. docs/project_notes/zone_operating_model.md
 3. docs/project_notes/key_facts.md
-4. docs/strategy_consensus/bbmr_trailing_stop_v1.md
-5. 用户提供的任务卡或 handoff
+4. docs/project_notes/issues.md 的 Current Summary 与当前任务最新条目
+5. 用户提供的任务卡或 handoff；仅在任务触发时再读策略共识、ADR、bugs 或 current_task.md
 
 职责：
 只按明确任务实现代码，保持最小改动，复用现有模式，运行相关测试并汇报结果。
@@ -282,14 +287,15 @@ Conflict handling:
 先读：
 1. AGENTS.md
 2. docs/project_notes/zone_operating_model.md
-3. docs/strategy_consensus/bbmr_trailing_stop_v1.md
-4. 验收合同、执行区证据报告、当前 diff
+3. docs/project_notes/key_facts.md
+4. docs/project_notes/issues.md 的 Current Summary 与当前任务最新证据
+5. 验收合同、当前 diff；仅在任务触发时再读策略共识或 ADR
 
 职责：
 只判断通过 / 不通过。检查代码、测试、策略边界、安全门禁和回归风险。
 
 输出：
-先给结论；不通过时列问题、证据、文件行号和最小返工任务卡。不要改代码。
+只判断通过 / 不通过；不通过时列问题、证据、文件行号和最小返工任务卡。不要编辑代码、文档或 handoff 文件。
 ```
 
 ### Maintenance Zone
@@ -301,7 +307,7 @@ Conflict handling:
 1. AGENTS.md
 2. docs/project_notes/zone_operating_model.md
 3. docs/project_notes/key_facts.md
-4. docs/project_notes/issues.md
+4. docs/project_notes/issues.md 的 Current Summary 与当前维护事项最新条目
 
 职责：
 检查 Git、分支、工作区、依赖、运行状态和环境问题。保持 mainline 清洁。

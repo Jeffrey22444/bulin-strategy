@@ -2,9 +2,10 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from bbmr.config import TrailingStrategyConfig, load_config
+from bbmr.config import load_config
+from bbmr.live.symbols import canonical_symbols
 
 REQUIRED_STRATEGY_CONFIG = Path("configs/strategy_bbmr_trailing_stop_v1.yaml")
 
@@ -19,7 +20,6 @@ class LiveExchangeSection(StrictModel):
     wallet_address_env: str
     private_key_env: str
     allow_mainnet: bool = False
-    default_leverage: int = Field(ge=1)
     margin_mode: str
     enable_rate_limit: bool = True
     timeout_ms: int = Field(gt=0)
@@ -43,6 +43,7 @@ class LiveExecutionSection(StrictModel):
     max_entry_slippage_bps: float = Field(default=100.0, gt=0)
     leverage: int = Field(ge=1)
     adverse_slope_leverage: int = Field(default=2, ge=1)
+    trend_riding_leverage: int = Field(default=2, ge=1)
     allow_strategy_add: bool = False
     adopt_manual_positions: bool = True
     manage_full_manual_added_size: bool = True
@@ -56,11 +57,18 @@ class LiveExecutionSection(StrictModel):
     def reject_strategy_add(self) -> "LiveExecutionSection":
         if self.allow_strategy_add:
             raise ValueError("strategy add-ons are out of scope")
+        if self.allow_testnet_orders and not self.maintain_exchange_stop:
+            raise ValueError("testnet orders require maintain_exchange_stop=true")
         return self
 
 
 class LiveSymbolsSection(StrictModel):
     default: list[str]
+
+    @field_validator("default")
+    @classmethod
+    def validate_symbols(cls, symbols: list[str]) -> list[str]:
+        return canonical_symbols(symbols)
 
 
 class LiveStorageSection(StrictModel):
@@ -78,9 +86,7 @@ class LiveConfig(StrictModel):
     def validate_strategy_config(self) -> "LiveConfig":
         if Path(self.strategy_config).resolve() != REQUIRED_STRATEGY_CONFIG.resolve():
             raise ValueError("live runner strategy_config must be configs/strategy_bbmr_trailing_stop_v1.yaml")
-        strategy = load_config(self.strategy_config)
-        if not isinstance(strategy, TrailingStrategyConfig):
-            raise ValueError("live runner requires bbmr_trailing_stop_v1 strategy config")
+        load_config(self.strategy_config)
         return self
 
 
