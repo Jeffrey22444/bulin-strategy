@@ -4,10 +4,10 @@ Track planning, handoffs, execution progress, blockers, and completed work here.
 
 ## Current Summary
 
-- **Current phase**: `STRATEGY-16` passed independent Acceptance; `STRATEGY-16-GIT-CLOSEOUT` is routed to Maintenance.
-- **Current recommended next task**: Maintenance inventories the three related top-level directories, resolves the canonical-tree/path-dependency boundary, then commits and normally pushes only the latest accepted system to `origin/main` if every safety gate passes.
-- **Latest accepted slice**: `STRATEGY-16` passed independent Acceptance. This is source acceptance only; it does not prove the current runner loaded the accepted source.
-- **Open blockers**: Maintenance must stop before commit/push on divergent/unknown copies, unresolved path dependencies, unaccepted worktree content, active-runtime relocation risk, secret/runtime artifacts, failed verification, or non-fast-forward remote state.
+- **Current phase**: `STRATEGY-16` and `STRATEGY-16-GIT-CLOSEOUT` are complete; the accepted system is published to GitHub.
+- **Current recommended next task**: None is automatically authorized. Proving that a running testnet runner loaded `STRATEGY-16` remains a separate explicit Maintenance runtime task if requested.
+- **Latest accepted slice**: `STRATEGY-16` passed independent Acceptance and was published in commit `3df34fe889cd9df690c778b24f78c3c5f7707eba`.
+- **Open blockers**: None for source Acceptance, workspace consolidation, path dependency audit, or GitHub publication. Runtime-loaded status remains unproven by this closeout.
 - **Last updated**: 2026-07-22
 
 ### 2026-07-22 - STRATEGY-16 Local Trend Watch Execution
@@ -31,6 +31,11 @@ Track planning, handoffs, execution progress, blockers, and completed work here.
 - **Planning preflight**: Read-only top-level inventory found only the canonical project plus `布林带策略_frontend_git_backup_2026-07-20` and `布林带策略_ponytail_backup_2026-07-20`. Git is on `main` tracking the existing `Jeffrey22444/bulin-strategy` origin with a broad accumulated dirty tree. Planning performed no move, stage, commit, push, process/runner action, SQLite/exchange write, code/YAML/test/frontend edit, dependency change, or remote mutation.
 - **Maintenance M1 Blocker**: Directory inventory/path audit passed with zero moves; both external backups remain intentionally external. Python full suite and frontend test/build/render passed. Exact allowlist staging stopped because untracked accepted `docs/repository_audit.md` has two trailing spaces on each of lines 3 and 4. Maintenance restored the index to empty and made no commit/push or runtime change.
 - **Planning R1 Decision**: Keep the accepted audit document in the publish set and authorize Maintenance to remove only those four trailing spaces, prove whitespace-only equivalence, then resume the original exact staging/normal-push contract. R1 handoff: `/private/tmp/bbmr_strategy16_git_workspace_closeout_r1_2026-07-22.md`. No separate strategy/code Acceptance is required for this mechanical documentation formatting correction.
+- **R1 Completion**: `STRATEGY-16_GIT_CLOSEOUT_COMPLETE`. `docs/repository_audit.md` changed by exactly four deleted trailing-space bytes on lines 3 and 4; byte proof and the retained `/private/tmp` before/scope evidence show no other publish-scope change.
+- **Directory And Path Result**: Zero files moved. `布林带策略_frontend_git_backup_2026-07-20` remains an intentional nested-Git recovery backup and `布林带策略_ponytail_backup_2026-07-20` remains an accepted-deletion backup. Runtime path searches found no unresolved absolute/backup path, external symlink, or nested-Git dependency; documentation-only historical path mentions were classified separately.
+- **Verification**: Python full suite passed; frontend npm test, Vinext build, and rendered tests `3/3` passed. Exact 90-path staging excluded `.env`, live SQLite/data/log/snapshots, dependency/build outputs, external backups, and nested Git; cached whitespace and sensitive-path checks passed.
+- **Git Publication**: Normal commit `3df34fe889cd9df690c778b24f78c3c5f7707eba` (`feat: publish accepted BBMR system updates`) was fast-forward pushed to `https://github.com/Jeffrey22444/bulin-strategy.git`. Maintenance proved local `HEAD`, `origin/main`, and remote `refs/heads/main` equal that SHA and returned a clean `main...origin/main` worktree.
+- **Runtime Boundary**: Runner PID `17829` and dashboard PID `36901` were observed read-only and not started, stopped, signalled, or restarted. No database, exchange, credential, `.env`, backup, merge/rebase/reset, force-push, or deletion action occurred.
 
 ### 2026-07-21 - STRATEGY-15 Trend Takeover Execution
 - **Status**: Completed; independent Acceptance pending
